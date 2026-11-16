@@ -192,6 +192,10 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
   };
 
   // 同源校验：浏览器同源 fetch 会带 Origin；缺失或不匹配一律拒绝。
+  const isLoopback = (() => {
+    const remote = req.socket?.remoteAddress ?? '';
+    return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  })();
   const host = req.headers?.host;
   const origin = req.headers?.origin;
   const referer = req.headers?.referer;
@@ -200,11 +204,20 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
       try { return new URL(origin).host === host; } catch { return false; }
     }
     if (referer) {
-      try { return new URL(referer).host === host; } catch { return false; }
+      try {
+        const view = new URL(referer);
+        // Electron 桌面端（dsh-app:// 协议）：宿主 forwardWebRequest 转发前会删掉
+        // origin/host/cookie/sec-fetch-site 且不再补回 origin（DSH 0.2.2-rc.3 起；
+        // 旧版 lib/web-document.js:162 有 headers.set("origin", target.origin)），
+        // 于是只剩 Chromium 自动生成的 Referer: dsh-app://app/…，与 host 永不相等。
+        // 该协议层本身只放行 origin 为 dsh-app://app 的请求，故此处按本机请求处理，
+        // 但仍要求来源是回环地址，避免被远端伪造 referer 绕过。
+        if (view.protocol === 'dsh-app:' && view.hostname === 'app') return isLoopback;
+        return view.host === host;
+      } catch { return false; }
     }
     // 无 Origin/Referer：只允许本机回环地址（供本机 curl 调试），其余拒绝。
-    const remote = req.socket?.remoteAddress ?? '';
-    return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    return isLoopback;
   })();
   if (!sameOrigin) {
     return send(403, { ok: false, error: '仅允许同源设置页访问' });

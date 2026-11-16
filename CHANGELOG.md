@@ -6,6 +6,24 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.1] — 2026-11-16
+
+**Desktop app can save servers again: same-origin check now understands the `dsh-app://` forward.**
+
+### Fixed
+
+- **`仅允许同源设置页访问` (403) on every save in the Electron desktop app.** The DSH host forwards `dsh-app://app` requests to the plugin's HTTP route after deleting the `host`, `origin`, `cookie` and `sec-fetch-site` headers. Since DSH `0.2.2-rc.3` it no longer restores an `origin` header (older `lib/web-document.js:162` did `headers.set("origin", target.origin)`), so the only same-origin signal left is Chromium's `Referer: dsh-app://app/…`. The previous check compared `new URL(referer).host` against the route's `host` — `app` never equals `127.0.0.1:<port>`, so `POST /odoo-backup/save-servers` and `/trust-host` always returned 403 and the settings were never persisted. Adding, editing, deleting and trusting a server now work in the desktop app again.
+
+### Security
+
+- The exemption is deliberately narrow: a `dsh-app://app` referer is accepted **only when `req.socket.remoteAddress` is loopback** (`127.0.0.1` / `::1` / `::ffff:127.0.0.1`). A forged `dsh-app://app` referer from any other source is still refused, and every other combination (external origin, external referer, `dsh-app://app` sent as `Origin`, malformed referer, loopback without any origin signal) keeps its previous verdict. Regression tests `ORIGIN-E1`–`ORIGIN-E8` cover all eight cells of the matrix.
+
+### Verified
+
+- `test/origin-electron-forward.test.js` reproduces the desktop header shape against the real handler: red before the fix (E1 → 403), green after (8/8).
+- End to end on a running desktop host: `Referer: dsh-app://app/` with no origin → `GET /odoo-backup/servers` 200, `POST /odoo-backup/save-servers` 200 and the profile patch file actually updated.
+- Full suite: 659 tests pass.
+
 ## [0.2.0] — 2026-11-16
 
 **Renamed to `dsh-odoo-backup`; Odoo 20 verified — same-major backup/restore only.**

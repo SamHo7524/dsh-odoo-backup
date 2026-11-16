@@ -6,6 +6,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.1] — 2026-11-16
+
+**桌面端恢复可保存服务器：同源校验现在认得 `dsh-app://` 协议转发。**
+
+### 修复
+
+- **Electron 桌面端每次保存都报 `仅允许同源设置页访问`（403）。** DSH 宿主把 `dsh-app://app` 的请求转发到插件 HTTP 路由前，会删掉 `host`、`origin`、`cookie`、`sec-fetch-site` 四个请求头。自 DSH `0.2.2-rc.3` 起**不再补回 `origin`**（旧版 `lib/web-document.js:162` 有 `headers.set("origin", target.origin)`），于是只剩 Chromium 自动生成的 `Referer: dsh-app://app/…`。原逻辑拿 `new URL(referer).host` 与路由的 `host` 比较 —— `app` 永远不等于 `127.0.0.1:<端口>`，因此 `POST /odoo-backup/save-servers` 与 `/trust-host` 恒返回 403，配置从不落盘。现在桌面端的「添加 / 编辑 / 删除 / 信任主机」恢复正常。
+
+### 安全
+
+- 豁免范围刻意收窄：仅当 **`req.socket.remoteAddress` 为回环地址**（`127.0.0.1` / `::1` / `::ffff:127.0.0.1`）时才接受 `dsh-app://app` 的 referer。来自其他来源的伪造 `dsh-app://app` referer 仍被拒绝；其余组合（外部 origin、外部 referer、把 `dsh-app://app` 作为 `Origin` 发送、畸形 referer、无任何同源信号的回环请求）判定一律不变。回归测试 `ORIGIN-E1`–`ORIGIN-E8` 覆盖该矩阵的全部八格。
+
+### 验证
+
+- `test/origin-electron-forward.test.js` 对真实 handler 复刻桌面端请求头形态：修复前为红（E1 → 403），修复后转绿（8/8）。
+- 在运行中的桌面宿主上端到端实测：仅带 `Referer: dsh-app://app/`、无 origin → `GET /odoo-backup/servers` 200，`POST /odoo-backup/save-servers` 200 且 profile patch 文件确实被更新。
+- 全量测试：659 项全部通过。
+
 ## [0.2.0] — 2026-11-16
 
 **改名为 `dsh-odoo-backup`；Odoo 20 已验证 —— 仅支持同一大版本内备份/恢复。**
