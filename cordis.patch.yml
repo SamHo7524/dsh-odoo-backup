@@ -1,6 +1,6 @@
 - insert:
     - id: odoo-backup
-      name: '@local/dsh-odoo19-backup'
+      name: '@local/dsh-odoo-backup'
       config:
         servers: []
         localBackupDir: 'K:/Backup/odoo'

@@ -1,10 +1,10 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-odoo19-backup',
+  id: '@local/dsh-odoo-backup',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
     const { useState, useCallback, useEffect, useRef, useSyncExternalStore } = React;
-    const pkgName = '@local/dsh-odoo19-backup';
+    const pkgName = '@local/dsh-odoo-backup';
     // useSyncExternalStore 要求稳定引用：这两个常量必须定义在模块级，
     // 绝不能在 getSnapshot/subscribe 里现造新对象/新函数。
     const EMPTY_SNAPSHOT = Object.freeze({});
@@ -136,14 +136,14 @@ window.__ModuleLoader__.load({
         // 可见文案走 Client locale 服务；回退值与 locale/zh.json 保持一致。
         const dict = {
           'tab.servers': '服务器', 'tab.backup': '备份', 'tab.restore': '恢复',
-          'settings.nav': 'Odoo19 备份与恢复',
+          'settings.nav': 'Odoo 备份与恢复',
           'server.add': '添加服务器', 'server.test': '测试连接',
           'backup.start': '开始备份', 'restore.start': '执行恢复',
           'task.delete': '删除',
         };
         const locale = ctx.reflect?.get?.('locale');
         let tr;
-        try { tr = locale?.bind?.('@local/dsh-odoo19-backup'); } catch (_) { tr = null; }
+        try { tr = locale?.bind?.('@local/dsh-odoo-backup'); } catch (_) { tr = null; }
         const t = (k) => {
           if (tr) { try { const v = tr(k); if (v && v !== k) return v; } catch (_) { /* fallthrough */ } }
           return dict[k] ?? k;
@@ -736,9 +736,9 @@ window.__ModuleLoader__.load({
           });
 
           return h('div', { style: { padding: 16, fontFamily: 'inherit', color: T.text } },
-            h('h2', { style: { margin: '0 0 4px', fontSize: 18 } }, 'dsh-odoo19-backup'),
+            h('h2', { style: { margin: '0 0 4px', fontSize: 18 } }, 'dsh-odoo-backup'),
             h('p', { style: { margin: '0 0 16px', color: T.text2, fontSize: 13 } },
-              '远程备份 Odoo 19（数据库 + filestore + addons + 依赖 + 配置）并安全恢复。'),
+              '远程备份 Odoo 19 / 20（数据库 + filestore + addons + 依赖 + 配置）并安全恢复。'),
             !scopeReady && h(Status, { text: notReady, tone: 'error' }),
             saveErr ? h(Status, { text: saveErr, tone: 'error' }) : null,
 
@@ -1309,7 +1309,7 @@ window.__ModuleLoader__.load({
             }
             return true;
           } catch (err) {
-            console.warn('[dsh-odoo19-backup] 绑定配置服务失败，卡片降级为只读提示：', err?.message ?? String(err));
+            console.warn('[dsh-odoo-backup] 绑定配置服务失败，卡片降级为只读提示：', err?.message ?? String(err));
             return false;
           }
         };
@@ -1330,19 +1330,19 @@ window.__ModuleLoader__.load({
                   return () => { try { off?.(); } catch (_) {} };
                 }
               } catch (err) {
-                console.warn('[dsh-odoo19-backup] configForms 晚到后绑定失败：', err?.message ?? String(err));
+                console.warn('[dsh-odoo-backup] configForms 晚到后绑定失败：', err?.message ?? String(err));
               }
               return () => {};
             });
           } catch (err) {
-            console.warn('[dsh-odoo19-backup] 无法等待 configForms：', err?.message ?? String(err));
+            console.warn('[dsh-odoo-backup] 无法等待 configForms：', err?.message ?? String(err));
           }
         }
 
         // 服务缺席 5 秒后输出点名 configForms 的诊断告警（不再静默）。
         const diagTimer = setTimeout(() => {
           if (!scope) {
-            console.warn('[dsh-odoo19-backup] configForms 未提供或未服务本插件的命名空间：'
+            console.warn('[dsh-odoo-backup] configForms 未提供或未服务本插件的命名空间：'
               + '设置页仍显示，但无法读写配置。请确认 dsh.client.inject 已声明 '
               + '@deepseek-ai/dsh-client-ui-settings，并重启 DSH / 硬刷新页面。');
           }

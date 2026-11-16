@@ -66,8 +66,8 @@ test('SECTION-6 面板组件与三 tab 逻辑未被迁移破坏', () => {
 test('SECTION-7 locale 提供 settings.nav（zh/en）', () => {
   const zh = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url), 'utf8'));
   const en = JSON.parse(readFileSync(new URL('../locale/en.json', import.meta.url), 'utf8'));
-  assert.equal(zh.ui['settings.nav'], 'Odoo19 备份与恢复');
-  assert.equal(en.ui['settings.nav'], 'Odoo19 Backup & Restore');
+  assert.equal(zh.ui['settings.nav'], 'Odoo 备份与恢复');
+  assert.equal(en.ui['settings.nav'], 'Odoo Backup & Restore');
 });
 
 test('SECTION-8 组件内 label 回退值非空（locale 服务缺席时仍可读）', () => {

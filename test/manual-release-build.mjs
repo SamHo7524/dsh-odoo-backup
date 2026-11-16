@@ -98,7 +98,7 @@ const sums = entries.map((e) => `${e.sha256}  ${e.path}`).join('\n') + '\n';
 await writeFile(join(RELEASES, `v${VERSION}-source.SHA256`), sums, 'utf8');
 
 console.log('\n=== 2. 从快照构建 DSH bundle ===');
-const tgzName = `dsh-odoo19-backup-${VERSION}.tgz`;
+const tgzName = `dsh-odoo-backup-${VERSION}.tgz`;
 const tgzPath = join(PACKAGES, tgzName);
 await rm(tgzPath, { force: true });
 

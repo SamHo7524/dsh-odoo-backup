@@ -9,18 +9,18 @@ const zh = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url)
 const en = JSON.parse(readFileSync(new URL('../locale/en.json', import.meta.url), 'utf8'));
 
 // ---------- 1. 名称 ----------
-const NEW = '@local/dsh-odoo19-backup';
+const NEW = '@local/dsh-odoo-backup';
 
-test('package.json 的 name 为 dsh-odoo19-backup', () => {
+test('package.json 的 name 为 dsh-odoo-backup', () => {
   assert.equal(pkg.name, NEW);
 });
 
 test('cordis.patch.yml 的 name 与包名一致', () => {
-  assert.match(patch, /name:\s*'@local\/dsh-odoo19-backup'/);
+  assert.match(patch, /name:\s*'@local\/dsh-odoo-backup'/);
 });
 
 test('client.js 的 ModuleLoader id 与包名一致', () => {
-  assert.match(src, /id:\s*'@local\/dsh-odoo19-backup'/);
+  assert.match(src, /id:\s*'@local\/dsh-odoo-backup'/);
 });
 
 test('client.js 在原生设置页的栏目 id 为插件自有 id（v0.1.14 宿主迁移）', () => {
@@ -28,9 +28,9 @@ test('client.js 在原生设置页的栏目 id 为插件自有 id（v0.1.14 宿�
   assert.match(src, /id:\s*'odoo-backup'/, '栏目 id 必须是自有 id，避免顶替内置栏目');
 });
 
-test('显示名称含 dsh-odoo19-backup（zh + en）', () => {
-  assert.match(zh.meta.title, /dsh-odoo19-backup/);
-  assert.match(en.meta.title, /dsh-odoo19-backup/);
+test('显示名称含 dsh-odoo-backup（zh + en）', () => {
+  assert.match(zh.meta.title, /dsh-odoo-backup/);
+  assert.match(en.meta.title, /dsh-odoo-backup/);
 });
 
 // ---------- 2. 配置契约（2026-11-06 修复后） ----------

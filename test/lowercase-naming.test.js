@@ -1,9 +1,9 @@
 /**
  * 全量小写重命名回归（用户要求「安装 dsh 的插件标注全部转换为小写」）。
  *
- * 目标标识：@local/dsh-odoo19-backup
- * 仓库：SamHo7524/dsh-odoo19-backup
- * 安装包：dsh-odoo19-backup-<ver>.tgz
+ * 目标标识：@local/dsh-odoo-backup
+ * 仓库：SamHo7524/dsh-odoo-backup
+ * 安装包：dsh-odoo-backup-<ver>.tgz
  *
  *  RED 断言：
  *   - 所有运行时/发布相关文件里不得再出现大写 DSH-ODOO19-Backup
@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OLD = 'DSH-ODOO19-Backup';
-const NEW = '@local/dsh-odoo19-backup';
-const SHORT = 'dsh-odoo19-backup';
+const NEW = '@local/dsh-odoo-backup';
+const SHORT = 'dsh-odoo-backup';
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -53,24 +53,24 @@ test('LOWER-1 运行时/发布文件里不再有大写标识 DSH-ODOO19-Backup�
     '以下文件仍含大写标识：' + offenders.join(', '));
 });
 
-test('LOWER-2 package.json 的 name 为小写 @local/dsh-odoo19-backup', () => {
+test('LOWER-2 package.json 的 name 为小写 @local/dsh-odoo-backup', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.name, NEW);
 });
 
 test('LOWER-3 cordis.patch.yml 的 name 与包名一致', () => {
   const patch = read('cordis.patch.yml');
-  assert.match(patch, /name:\s*'?@local\/dsh-odoo19-backup'?/);
+  assert.match(patch, /name:\s*'?@local\/dsh-odoo-backup'?/);
   assert.ok(!patch.includes(OLD));
 });
 
 test('LOWER-4 client.js 的 id / 设置栏 id / locale.bind 与包名一致且为小写', () => {
   const src = read('client.js');
-  assert.match(src, /id:\s*'@local\/dsh-odoo19-backup'/);
+  assert.match(src, /id:\s*'@local\/dsh-odoo-backup'/);
   // v0.1.14 宿主迁移：原 `key: <包名>` 卡片契约改为原生设置页栏目 id。
   assert.match(src, /name:\s*'settings\.section'/);
   assert.match(src, /id:\s*'odoo-backup'/);
-  assert.match(src, /bind\?\.\('@local\/dsh-odoo19-backup'\)/);
+  assert.match(src, /bind\?\.\('@local\/dsh-odoo-backup'\)/);
   assert.ok(!src.includes(OLD));
 });
 
@@ -83,11 +83,16 @@ test('LOWER-5 locale en/zh 的 meta.title 为小写', () => {
 
 test('LOWER-6 构建脚本产出的 tgz 名为小写', () => {
   const s = read('test/manual-release-build.mjs');
-  assert.match(s, /dsh-odoo19-backup-\$\{VERSION\}\.tgz/);
+  assert.match(s, /dsh-odoo-backup-\$\{VERSION\}\.tgz/);
   assert.ok(!s.includes(OLD));
 });
 
-test('LOWER-7 发布校验脚本期望小写包名', () => {
-  const v = read('test/manual-release-verify.mjs');
-  assert.match(v, /@local\/dsh-odoo19-backup/);
+test('LOWER-7 发布与同步脚本使用小写新标识（仓库名 + tgz 名）', () => {
+  const pub = read('scripts/publish-release.mjs');
+  assert.match(pub, /OWNER_REPO\s*=\s*'SamHo7524\/dsh-odoo-backup'/);
+  assert.match(pub, /dsh-odoo-backup-\$\{version\}\.tgz/);
+  assert.ok(!pub.includes(OLD));
+  const sync = read('scripts/release-sync-check.mjs');
+  assert.match(sync, /SamHo7524\/dsh-odoo-backup/);
+  assert.ok(!sync.includes(OLD));
 });

@@ -19,7 +19,7 @@ const GIT = 'C:/Program Files/Git/cmd/git.exe';
 const NODE = process.execPath;
 const REPO = process.env.RELEASE_REPO || 'K:/Backup/odoo-plugin-releases/_gh-publish/repo';
 const PKG_DIR = 'K:/Backup/odoo-plugin-releases/packages';
-const OWNER_REPO = 'SamHo7524/dsh-odoo19-backup';
+const OWNER_REPO = 'SamHo7524/dsh-odoo-backup';
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const releasesOnly = args.includes('--releases-only');
@@ -28,7 +28,7 @@ const versionArg = args.includes('--version') ? args[args.indexOf('--version') +
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const version = versionArg || pkg.version;
 const tag = `v${version}`;
-const tgzName = `dsh-odoo19-backup-${version}.tgz`;
+const tgzName = `dsh-odoo-backup-${version}.tgz`;
 
 const log = (m) => console.log(m);
 const die = (m) => { console.error(`\nFAILED: ${m}`); process.exit(1); };
@@ -136,7 +136,7 @@ if (!releasesOnly) {
   if (fail !== '0') die('测试未全部通过');
 }
 
-// ---------- 3. 打包（统一命名 dsh-odoo19-backup-X.Y.Z.tgz） ----------
+// ---------- 3. 打包（统一命名 dsh-odoo-backup-X.Y.Z.tgz） ----------
 log('=== pack ===');
 mkdirSync(PKG_DIR, { recursive: true });
 const finalTgz = join(PKG_DIR, tgzName);

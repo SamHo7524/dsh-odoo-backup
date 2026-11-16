@@ -6,6 +6,22 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.0] — 2026-11-16
+
+**Renamed to `dsh-odoo-backup`; Odoo 20 verified — same-major backup/restore only.**
+
+### Changed
+
+- Package, repository and install spec renamed `dsh-odoo19-backup` → `dsh-odoo-backup`. Runtime entry id (`odoo-backup`), UI route prefix and settings-section id are unchanged, so existing servers, passphrase and settings survive the upgrade — uninstall the old bundle first, then install the new one.
+- Both READMEs now state the support matrix explicitly: **Odoo 19 and Odoo 20 are supported; backup and restore must stay within the same major version. Cross-major restore (19 ↔ 20) is not supported** and is refused by the precheck version gate with both versions named.
+- Settings label simplified: `Odoo19 备份与恢复` → `Odoo 备份与恢复`, `Odoo19 Backup & Restore` → `Odoo Backup & Restore`; page subtitle and tool descriptions no longer imply Odoo-19-only.
+- Version gate documented as major-version-scoped (19→19 and 20→20 pass, 19 ↔ 20 refused); comment/message wording generalized from “19 → 20” to “cross-major (e.g. 19 ↔ 20)”.
+
+### Verified
+
+- Reported by the operator: Odoo 20 backup and restore exercised on a real Odoo 20 instance (same major version).
+- Regression added: `20.0 → 20.0` passes as `same-major`; `20.0 → 19.0` refused as `cross-major`; 19→19 and 19→20 behaviour unchanged.
+- Rename contract tests (package name, client id, locale title, publish scripts, READMEs, CHANGELOGs) all green.
 ## [0.1.27] — 2026-11-12
 
 **Chunked SCP downloads finally have a timeout and real progress: a wedged transfer now fails instead of silently sitting at 64% forever.**

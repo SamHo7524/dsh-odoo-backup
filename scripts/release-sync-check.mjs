@@ -28,7 +28,7 @@ function ghToken() {
 }
 
 async function gh(path) {
-  const r = await fetch(`https://api.github.com/repos/SamHo7524/dsh-odoo19-backup/${path}`, {
+  const r = await fetch(`https://api.github.com/repos/SamHo7524/dsh-odoo-backup/${path}`, {
     headers: { Authorization: `token ${ghToken()}`, 'User-Agent': 'release-sync-check', Accept: 'application/vnd.github+json' },
   });
   if (r.status === 404) return null;
@@ -67,7 +67,13 @@ for (const v of versions) {
   if (!release) { fail('缺少 GitHub Release（只有 tag 不算发布）'); continue; }
   ok(`Release 存在 (draft=${release.draft})`);
   const assets = release.assets.map((a) => a.name);
-  const want = [`dsh-odoo19-backup-${v}.tgz`, `local-dsh-odoo19-backup-${v}.tgz`];
+  // v0.2.0 改名：新版本用新包名；历史 Release（≤0.1.27）仍是旧包名，必须继续接受，否则判漂移。
+  const want = [
+    `dsh-odoo-backup-${v}.tgz`,
+    `dsh-odoo19-backup-${v}.tgz`,
+    `local-dsh-odoo-backup-${v}.tgz`,
+    `local-dsh-odoo19-backup-${v}.tgz`,
+  ];
   if (!want.some((w) => assets.includes(w))) fail(`附件缺 .tgz（现有: ${assets.join(',') || '无'}）`);
   else ok(`附件 ${assets.join(',')} (${release.assets[0].size} B)`);
   if (!changelogEn.includes(`## [${v}]`)) fail('CHANGELOG.md 缺该版本章节');

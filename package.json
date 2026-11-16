@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-odoo19-backup",
-  "version": "0.1.27",
+  "name": "@local/dsh-odoo-backup",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Odoo 19 远程备份与安全恢复",
+  "description": "Odoo 19 / 20 远程备份与安全恢复（同一大版本内）",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

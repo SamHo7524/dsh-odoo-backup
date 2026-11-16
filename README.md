@@ -1,17 +1,17 @@
-# dsh-odoo19-backup
+# dsh-odoo-backup
 
 [中文文档](./README.zh-CN.md) · [Changelog](./CHANGELOG.md) · [中文更新日志](./CHANGELOG.zh-CN.md)
 
-A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 remote backup and safe restore**.
+A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 / Odoo 20 remote backup and safe restore** (same major version only).
 
 It backs up the database, filestore, addons, runtime dependencies and configuration over SSH, and restores through a temp-database verification, downtime switch and rollback-on-failure state machine. Host-key trust is **fail-closed** — an unpinned or changed host key is refused.
 
-- Bundle package name: `@local/dsh-odoo19-backup`
-- Current version: `0.1.27`
-- Install source: `github:SamHo7524/dsh-odoo19-backup#v0.1.27`
+- Bundle package name: `@local/dsh-odoo-backup`
+- Current version: `0.2.0`
+- Install source: `github:SamHo7524/dsh-odoo-backup#v0.2.0`
 - License: private / internal use (`private: true` in `package.json`)
 
-> This plugin supports **Odoo 19 only**. Cross-major-version restore (e.g. 19 → 20) is refused by design.
+> **Supported: Odoo 19 and Odoo 20** — both verified on real machines. Backup and restore must happen **within the same major version** (19 → 19, 20 → 20). **Cross-major-version restore (e.g. 19 ↔ 20) is NOT supported**: the precheck version gate refuses it with both versions named. Moving across major versions is a separate upgrade project (migrate first, then start a new backup baseline).
 
 ---
 
@@ -20,15 +20,17 @@ It backs up the database, filestore, addons, runtime dependencies and configurat
 In DSH, install the bundle directly from this repository:
 
 ```
-github:SamHo7524/dsh-odoo19-backup#v0.1.27
+github:SamHo7524/dsh-odoo-backup#v0.2.0
 ```
 
-Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.27):
+Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.0):
 
 ```
-dsh-odoo19-backup-0.1.27.tgz
+dsh-odoo-backup-0.2.0.tgz
 ```
 
+> Upgrading from `0.1.x`: the plugin was renamed from `dsh-odoo19-backup` to `dsh-odoo-backup` and this repository followed. Uninstall the old bundle (`@local/dsh-odoo19-backup`) first, then install the new one. The runtime entry id (`odoo-backup`) is unchanged, so your servers, passphrase and settings are preserved.
+>
 > Use `plugin_manager` (`install_bundle`) rather than copying files into `node_modules`: DSH re-runs `pnpm install` from the profile's `package.json` on every start, so only a durable install spec survives a restart.
 
 After installing, **restart DSH** (Host-side `index.js` / `lib/*.js` changes require a full restart; the Client half needs only a hard refresh).
@@ -36,7 +38,7 @@ After installing, **restart DSH** (Host-side `index.js` / `lib/*.js` changes req
 Verify the installation:
 
 ```
-plugin_manager list_plugins    # include:odoo-backup -> @local/dsh-odoo19-backup, fiberPhase: active
+plugin_manager list_plugins    # include:odoo-backup -> @local/dsh-odoo-backup, fiberPhase: active
 GET /odoo-backup/servers       # 200 {"ok":true,"servers":[...]}
 odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 ```
@@ -49,7 +51,7 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 |:--|:--|
 | Backup | Remote discovery (Docker / 1Panel / bare metal) → dump → package (DB + filestore + addons + `.local` deps + config) → encrypted download. Transfers ≥100 MiB are chunked (100 MiB parts), SHA-256 verified and **resumable** — a verified part is never re-downloaded. |
 | Restore | R1 state machine: safety backup → temp restore → V1–V7 verification → downtime switch → verify → commit / automatic rollback. Bundles deploy addons and pydeps before the DB is switched, so a restored site starts with its real module set. |
-| Version gate | Before any remote write, the backup's `MANIFEST.source.odooVersion` is compared with the target's discovered `odooVersion`. A provably cross-major pair is **refused** (with both versions and two options: same-major target, or treat 19→20 as an upgrade project) and `/precheck` answers 409 without issuing a `confirmToken`; an unknown version proceeds with an explicit warning. |
+| Version gate | Before any remote write, the backup's `MANIFEST.source.odooVersion` is compared with the target's discovered `odooVersion`. A provably cross-major pair (e.g. 19 ↔ 20) is **refused** (with both versions and two options: a same-major target, or treat the cross-major move as an upgrade project) and `/precheck` answers 409 without issuing a `confirmToken`; an unknown version proceeds with an explicit warning. |
 | Diagnostics | Failures are never black-box: known modes (version/schema mismatch, DB already exists, disk full, SSH host-key vs auth, DB unreachable, timeout) render as raw error + 【诊断】 cause + 【建议】 next step; unknown errors pass through verbatim. The UI and both agent tools show the same text. |
 | Restore options | Target database name (auto-discovered from the server's `dbfilter` or set explicitly) and **restore target domain** — rewrites `ir_config_parameter` / `website` domains from the source site to the target (e.g. `www.toogel.cn` → `odoo.toogel.cn`) before the switch completes. |
 | Neutralize | After a restore (or on demand), `neutralize` puts the target site in a safe state for testing: it disables outgoing mail servers and cron jobs, keeps payment/test providers inert and rebrands the site. `odoo_backup`/UI expose status → precheck → apply, and the **Keep / Release neutralize** buttons let you complete the whole backup-restore loop without a shell. |
@@ -61,7 +63,7 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 
 ## Configuration
 
-Open **DSH Settings → Odoo19 Backup & Restore** (the plugin registers its own settings section; it is no longer a card under Installed Plugins).
+Open **DSH Settings → Odoo Backup & Restore** (the plugin registers its own settings section; it is no longer a card under Installed Plugins).
 
 Each server supports:
 
@@ -105,7 +107,7 @@ Each server supports:
 ## Development
 
 ```bash
-node --test "test/**/*.test.js"        # 570 tests
+node --test "test/**/*.test.js"        # 651 tests
 node --check index.js client.js lib/*.js
 node scripts/release-sync-check.mjs    # verify tags ↔ GitHub Releases ↔ CHANGELOG ↔ README
 ```
@@ -143,9 +145,9 @@ The project is **not** a local git checkout during development; releases are pub
 
 ## Status & limitations
 
-- 615 / 615 unit tests pass; `node --check` clean across 30 files.
+- 651 / 651 unit tests pass; `node --check` clean across `index.js`, `client.js`, `lib/*.js` and the release scripts.
 - Real-machine verified: `odoo_backup` `listServers` / `test` over SSH, `odoo_restore` status, the native settings section and its HTTP routes.
 - **Not executed / not authorized**: real R1 downtime switch on the production primary database, agent-driven browser click-through, production deployment. Production servers were read-only throughout development.
 - Host-side changes require a **full DSH restart**; the Client half only needs a hard refresh.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.1.27), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
+See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.2.0), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
