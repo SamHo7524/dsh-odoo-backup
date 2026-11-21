@@ -6,6 +6,43 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.4] — 2026-11-21
+
+**热修：v0.2.3 真机全链路备份在最后一步崩了 —— `extrasResult` 出了作用域，`ReferenceError`。**
+
+### 缺陷
+
+v0.2.3 首次真机全链路备份（toogel，601 MB / 7 分片）下载、组装、校验、加密**全部成功**，然后在函数最后一行 `return` 里抛出：
+
+```
+ReferenceError: extrasResult is not defined
+```
+
+根因：`extrasResult` 声明在 `if (!resumePlan) { ... }` 块内的 `const`，而 `extras: extrasResult.extras` 写在 `runBackup` 函数末尾的 `return` 里 —— 那是**两个不同的作用域**。语法检查通过（`node --check` 干净）、745 个单测全绿，因为**没有任何测试真正执行到那一行 return**。
+
+后果：一次真实备份白跑 27 分钟（dump + 打包 + 600 MB 分片下载 + 加密全做完），任务状态记为 `failed`，`integrity` 四项全 false，但 **`.tar.enc` 产物其实是完整的**（630,313,012 B = 明文 630,312,960 + 52 B 头尾），`completed.json` 也已写入。属于「数据成功了却报失败」，比真失败更误导。
+
+### 修复
+
+- `lib/backup.js` 在函数作用域新增 `let extrasRecords = [];`，块内打包完成后 `extrasRecords = extrasResult.extras;`，`return` 用 `extras: extrasRecords`。续传路径没有本次打包结果，天然是空数组。
+- `lib/backup.js` 新增下载层注入点 `deps.scpDownload` / `deps.downloadAll` / `deps.assemble`（与既有 `deps.execRemote` / `deps.statfs` 同风格）。**这不是为了「方便测试」好看，而是让集成测试能真的跑到函数末尾的 return** —— 本次 bug 正是「所有测试都跑不到那一行」才漏出去的。
+
+### 新增测试
+
+`test/backup-return-extras.test.js`（RET-1 / RET-2，2 例）：用注入的远端执行器 + 下载器跑完「建目录→dump→打包→extras→MANIFEST→外层 tar→下载→加密→清理→return」整条链路，断言返回值里 `extras` 是真实打包记录。
+
+**变异验证**：把 `extras: extrasRecords` 改回 `extras: extrasResult.extras`，RET-1/RET-2 都以 `ReferenceError: extrasResult is not defined` 变红，错误文本与生产完全一致 → 测试有真实约束力。
+
+### 同时修正的两处「把 bug 写成规格」的断言
+
+- `test/tool-backup-extras.test.js` 的 TBX-5 原先断言 `extras:\s*extrasResult\.extras` —— **那正是崩溃形态**。改为「extras 引用的标识符必须在 runBackup 的 try 之前以 let/const/var 声明」，作用域违规即失败。
+- `test/transfer-timeout-wiring.test.js` CTW-2 与 `test/local-space-precheck.test.js` LSP-5 用 `src.indexOf('downloadAll(')` 定位调用点，注入点改名后取到 -1 导致 `precheck < -1` 为假。改为 `/[Dd]ownloadAll\(/`。
+
+### 验证
+
+- 全量串行单测 **747 / 747 通过**（86 个测试文件，v0.2.3 为 745）。
+- `node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 全干净。
+
 ## [0.2.3] — 2026-11-21
 
 **热修：v0.2.2 装不上 —— `index.js` 用了 schemastery 不存在的 `.nullable()`。**

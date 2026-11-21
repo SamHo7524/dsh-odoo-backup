@@ -49,8 +49,12 @@ test('CTW-2 runBackup 把 transferTimeoutMs 传给 downloadAll（源码接线断
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../lib/backup.js', import.meta.url), 'utf8');
   assert.match(src, /transferTimeoutMs/, 'runBackup 必须接收 transferTimeoutMs');
-  // downloadAll 的调用参数里必须出现它
-  const callBlock = src.slice(src.indexOf('downloadAll('), src.indexOf('downloadAll(') + 800);
+  // downloadAll 的调用参数里必须出现它。
+  // 注意调用点可能是 `downloadAll(` 或可注入的 `doDownloadAll(`（v0.2.4 为让集成测试
+  // 跑到 return 而引入注入点），用 /[Dd]ownloadAll\(/ 同时覆盖，别把注入点误判成断线。
+  const at = src.search(/[Dd]ownloadAll\(/);
+  assert.ok(at > 0, '必须存在 downloadAll 调用点');
+  const callBlock = src.slice(at, at + 800);
   assert.match(callBlock, /timeoutMs/, 'downloadAll 调用必须传 timeoutMs（默认值会让超时形同虚设）');
 });
 

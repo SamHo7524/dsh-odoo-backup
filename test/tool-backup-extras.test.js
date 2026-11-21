@@ -80,5 +80,26 @@ test('TBX-5 runBackup 返回体带 extras 数组（每项 name/bytes/sha256）',
   assert.ok(returnIdx > 0, '找不到 runBackup 的返回对象');
   const tail = src.slice(returnIdx);
   assert.match(tail, /extras:/, 'runBackup 返回体必须带 extras');
-  assert.match(tail, /extras:\s*extrasResult\.extras/, 'extras 应取打包结果数组');
+
+  // ⚠ 这里曾经断言 `extras:\s*extrasResult\.extras` —— 而 extrasResult 是
+  // `if (!resumePlan)` 块内的 const，返回体在函数末尾，**那就是崩溃本身**。
+  // 静态源码断言把 bug 写成了规格，全绿却挡不住 ReferenceError。
+  // 现在只锁「返回体里的 extras 必须是能在函数作用域解析到的标识符」：
+  // 该标识符必须在 `try {` 之前以 let/const/var 声明过。
+  const m = tail.match(/extras:\s*([A-Za-z_$][\w$]*)\s*,/);
+  assert.ok(m, 'extras 应直接引用一个标识符');
+  const ident = m[1];
+  // 作用域基准取 runBackup 函数体开头，而不是全文第一个 try（文件里前面还有别的 try）
+  const fnIdx = src.indexOf('export async function runBackup');
+  assert.ok(fnIdx > 0, '找不到 runBackup 定义');
+  const tryIdx = src.indexOf('try {', fnIdx);
+  assert.ok(tryIdx > fnIdx, 'runBackup 内找不到 try 块');
+  const before = src.slice(fnIdx, tryIdx);
+  assert.match(
+    before,
+    new RegExp(`(?:let|const|var)\\s+${ident}\\b`),
+    `extras 引用的 ${ident} 必须在函数作用域（runBackup 的 try 之前）声明，否则会在 return 处抛 ReferenceError`,
+  );
+
+  // 行为层的权威验证在 backup-return-extras.test.js（RET-1/RET-2 真的跑到 return）。
 });

@@ -6,6 +6,43 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.4] — 2026-11-21
+
+**Hotfix: the v0.2.3 end-to-end backup crashed on the very last line — `extrasResult` had gone out of scope, `ReferenceError`.**
+
+### Defect
+
+The first real end-to-end backup on v0.2.3 (toogel, 601 MB across 7 chunks) completed dump, packing, download, assembly, verification and encryption **successfully**, then threw from the function's final `return`:
+
+```
+ReferenceError: extrasResult is not defined
+```
+
+Root cause: `extrasResult` was a `const` declared inside the `if (!resumePlan) { ... }` block, while `extras: extrasResult.extras` sat in the `return` at the end of `runBackup` — **two different scopes**. `node --check` was clean and all 745 unit tests were green, because **no test ever executed that return statement**.
+
+Consequence: one real backup wasted 27 minutes (dump + packing + 600 MB chunked download + encryption all done), the task was recorded as `failed`, `integrity` was all-false, yet the **`.tar.enc` artifact was actually complete** (630,313,012 B = 630,312,960 plaintext + 52 B header/trailer) and `completed.json` had been written. "Data succeeded but reported failure" is more misleading than a real failure.
+
+### Fixed
+
+- `lib/backup.js` now holds `let extrasRecords = [];` in function scope, sets `extrasRecords = extrasResult.extras;` after packing inside the block, and returns `extras: extrasRecords`. The resume path has no packing result for this run, so it naturally stays an empty array.
+- `lib/backup.js` gained download-layer injection points `deps.scpDownload` / `deps.downloadAll` / `deps.assemble` (matching the existing `deps.execRemote` / `deps.statfs`). **These are not for test cosmetics — they let the integration test actually reach the final return**, which is exactly what this bug slipped through.
+
+### Tests added
+
+`test/backup-return-extras.test.js` (RET-1 / RET-2): drives the whole chain — mkdir → dump → pack → extras → MANIFEST → outer tar → download → encrypt → cleanup → return — with injected remote executor and downloader, and asserts the returned `extras` is the real packing record.
+
+**Mutation verification**: reverting `extras: extrasRecords` to `extras: extrasResult.extras` turns RET-1/RET-2 red with `ReferenceError: extrasResult is not defined`, matching production exactly → the test has real binding force.
+
+### Two assertions that had encoded the bug as the specification
+
+- `test/tool-backup-extras.test.js` TBX-5 asserted `extras:\s*extrasResult\.extras` — **that is the crashing form**. Now it asserts the identifier referenced by `extras` is declared with let/const/var before `runBackup`'s `try`, so a scope violation fails.
+- `test/transfer-timeout-wiring.test.js` CTW-2 and `test/local-space-precheck.test.js` LSP-5 located the call site via `src.indexOf('downloadAll(')`, which returned -1 once the injectable was renamed. They now use `/[Dd]ownloadAll\(/`.
+
+### Verified
+
+- Full serial suite: **747 / 747 pass** (86 test files; v0.2.3 was 745).
+- `node --check` clean across `index.js`, `client.js`, `lib/*.js`.
+
 ## [0.2.3] — 2026-11-21
 
 **Hotfix: v0.2.2 would not install — `index.js` used a `.nullable()` that schemastery does not have.**

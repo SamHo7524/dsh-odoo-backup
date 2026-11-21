@@ -65,7 +65,9 @@ test('LSP-4 预检缺失 bsize/bavail 时跳过（不误判为不足）', async 
 test('LSP-5 runBackup 在下载判定之前调用本地空间预检', () => {
   const precheck = src.indexOf('ensureLocalSpace(');
   const chunkIdx = src.indexOf('shouldChunk(');
-  const downloadIdx = src.indexOf('downloadAll(');
+  // 调用点可能是 `downloadAll(` 或可注入的 `doDownloadAll(`（v0.2.4 为让集成测试
+  // 真的跑到 return 而引入注入点），用宽松匹配避免把注入点误判成「没有下载」。
+  const downloadIdx = src.search(/[Dd]ownloadAll\(/);
   assert.ok(precheck > 0, 'runBackup 必须调用 ensureLocalSpace');
   assert.ok(precheck < chunkIdx, '预检必须在 shouldChunk 判定之前');
   assert.ok(precheck < downloadIdx, '预检必须在下载之前');

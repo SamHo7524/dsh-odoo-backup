@@ -7,8 +7,8 @@
 通过 SSH 备份数据库、filestore、addons、运行时依赖与配置；恢复采用「临时库验证 → 停机切换 → 失败自动回滚」状态机。主机密钥信任 **fail-closed**：未固定或指纹变化一律拒绝连接。
 
 - 包名：`@local/dsh-odoo-backup`
-- 当前版本：`0.2.3`
-- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.2.3`
+- 当前版本：`0.2.4`
+- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.2.4`
 - 许可：内部使用（`package.json` 中 `private: true`）
 
 > **支持 Odoo 19 与 Odoo 20**（两者均经真机验证）。备份与恢复必须在**同一个大版本内**进行（19 → 19、20 → 20）。**跨大版本恢复（如 19 ↔ 20）不支持**：预检版本闸门会直接拒绝，并列出源/目标两个版本。跨大版本迁移属于独立升级项目（先升级，再建立新的备份基线）。
@@ -20,13 +20,13 @@
 在 DSH 中直接从本仓库安装 bundle：
 
 ```
-github:SamHo7524/dsh-odoo-backup#v0.2.3
+github:SamHo7524/dsh-odoo-backup#v0.2.4
 ```
 
-或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.3) 下载安装包：
+或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.4) 下载安装包：
 
 ```
-dsh-odoo-backup-0.2.3.tgz
+dsh-odoo-backup-0.2.4.tgz
 ```
 
 > 从 `0.1.x` 升级：插件已由 `dsh-odoo19-backup` 改名为 `dsh-odoo-backup`，仓库同步改名。请先在插件管理里卸载旧 bundle（`@local/dsh-odoo19-backup`），再安装新包。运行时 entry id（`odoo-backup`）未变，服务器列表、口令与设置全部保留。
@@ -193,9 +193,9 @@ scripts/            release-sync-check.mjs（发布一致性闸门）
 
 ## 状态与限制
 
-- 745 / 745 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
+- 747 / 747 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
 - 真机验证：`odoo_backup` 的 `listServers` / `test`（真实 SSH）、`odoo_restore` 状态查询、原生设置分区及其 HTTP 路由。
 - **未执行 / 未授权**：生产主库真实 R1 停机切换、agent 浏览器内点击验证、生产部署。开发全程生产服务器只读。
 - Host 半侧改动需**完全重启 DSH**；Client 半侧硬刷新即可。
 
-完整 0.1.0 → 0.2.3 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
+完整 0.1.0 → 0.2.4 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
