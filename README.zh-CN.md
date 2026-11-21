@@ -7,8 +7,8 @@
 通过 SSH 备份数据库、filestore、addons、运行时依赖与配置；恢复采用「临时库验证 → 停机切换 → 失败自动回滚」状态机。主机密钥信任 **fail-closed**：未固定或指纹变化一律拒绝连接。
 
 - 包名：`@local/dsh-odoo-backup`
-- 当前版本：`0.2.1`
-- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.2.1`
+- 当前版本：`0.2.2`
+- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.2.2`
 - 许可：内部使用（`package.json` 中 `private: true`）
 
 > **支持 Odoo 19 与 Odoo 20**（两者均经真机验证）。备份与恢复必须在**同一个大版本内**进行（19 → 19、20 → 20）。**跨大版本恢复（如 19 ↔ 20）不支持**：预检版本闸门会直接拒绝，并列出源/目标两个版本。跨大版本迁移属于独立升级项目（先升级，再建立新的备份基线）。
@@ -20,13 +20,13 @@
 在 DSH 中直接从本仓库安装 bundle：
 
 ```
-github:SamHo7524/dsh-odoo-backup#v0.2.1
+github:SamHo7524/dsh-odoo-backup#v0.2.2
 ```
 
-或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.1) 下载安装包：
+或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.2) 下载安装包：
 
 ```
-dsh-odoo-backup-0.2.1.tgz
+dsh-odoo-backup-0.2.2.tgz
 ```
 
 > 从 `0.1.x` 升级：插件已由 `dsh-odoo19-backup` 改名为 `dsh-odoo-backup`，仓库同步改名。请先在插件管理里卸载旧 bundle（`@local/dsh-odoo19-backup`），再安装新包。运行时 entry id（`odoo-backup`）未变，服务器列表、口令与设置全部保留。
@@ -73,6 +73,7 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 | `keyPath` | 私钥路径；留空则用 SSH Agent / ssh config 别名 |
 | `sshConfigAlias` | `~/.ssh/config` 里的 `Host` 别名 —— **最快的主机信任方式**（把密钥信任交给 SSH 配置） |
 | `pinnedFingerprint` | 人工核对过的 `SHA256:...` 主机指纹 |
+| `extraPaths` | **额外路径**：随同一个包一起打包的服务器绝对路径（知识库 / `~/.hermes` 等），每项含 `name` / `path` / `exclude` / `maxBytes` |
 
 **首次使用顺序**
 
@@ -80,6 +81,53 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 2. 信任主机密钥：二选一 —— 填 `sshConfigAlias`；或点「扫描指纹」取得指纹，**带外人工核对**后填入 `pinnedFingerprint`。两者都没有时 `guardHostKey` 会拒绝连接（fail-closed，刻意设计，不是故障）。
 3. 点「测试连接」—— 应返回真实系统信息（OS / CPU / 内存 / Docker）。
 4. 设置 **`passphrase`** —— 未配置时备份**直接拒绝**（R10 强制加密，fail-closed）。
+
+---
+
+## 额外路径（知识库 / Hermes）
+
+Odoo 的 chatbot 回答问题要读知识库（如 `/root/Documents/Obsidian Vault`），而知识库本身不在数据库里 —— 只备份数据库等于**没备份对照答案**。本版把这类目录纳入**同一套加密传输链路**：远端打包 → 随外层 tar 一起下载 → 同一个 `encryptFile` 加密。
+
+在 **服务器编辑表单**里点「添加额外路径」，每条填：
+
+| 字段 | 含义 |
+|:--|:--|
+| 名称 `name` | 包内文件名前缀，字母/数字开头，最长 32 字符，不能与内置项（`addons` / `pydeps` / `conf` / `dump` / `manifest` / `odoo`）重名 |
+| 路径 `path` | 服务器上的**绝对路径**（必须 `/` 开头，可用空格与中文） |
+| 排除 `exclude` | 逗号分隔的 `--exclude` 模式；**以 `./` 开头时只锚定顶层**（`./.git` 只排根目录的 `.git`，不排子目录同名项） |
+| 上限 `maxBytes` | 可选；超过即让整个备份失败，防止误配大目录把磁盘打满 |
+
+**推荐起点**（toogel 实测体积：vault ≈ 111 MiB，`~/.hermes` 全量 ≈ 6.04 GiB）：
+
+```
+vault   → /root/Documents/Obsidian Vault   exclude: ./.git, ./.obsidian
+hermes  → /root/.hermes                    exclude: ./cache, ./*.lock
+```
+
+`~/.hermes` 排掉 `cache` 与锁文件后 ≈ 4.77 GiB —— 不排会白白多传 1.4 GiB 可再生缓存。
+
+**三条硬约束（fail-closed，不是可配开关）**
+
+1. **路径不存在就整个备份失败**，并在错误里列出是哪几条、各自什么路径。不会像 addons 那样记个「缺失」照样出包 —— 否则你以为知识库进包了，其实没有。
+2. **打包前做空间预算**：远端需要 `额外体积 × 1.5 + dump × 2 + 512 MiB` 余量，不足当场拒绝并给出两个可读数字（需要多少 / 现在多少）。
+3. **本地下载前也做预检**：本地目录需要 `包体积 × 2.2`，不足同样拒绝并给出两个数字。
+
+**本版不自动恢复额外路径。** 恢复流程只处理数据库 / filestore / addons / conf；额外路径的还原是**手工步骤**（刻意设计：知识库是活文档，自动覆盖有丢数据的风险）：
+
+```bash
+# 1) 从加密包拿到外层 tar
+#    （插件下载的 .tar.enc 用插件口令解密后即为外层 tar）
+# 2) 取出某一条额外路径包
+tar -xOf odoo-backup-<ts>.tar ./vault-<ts>.tar.zst > /tmp/vault.tar.zst
+# 3) 验证压缩完整性与内容
+zstd -t /tmp/vault.tar.zst
+tar -tf /tmp/vault.tar.zst | head
+# 4) 解回目标位置（先在临时目录解，再对比/合并，不要直接覆盖生产）
+mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
+# 5) 核对 sha256 与 MANIFEST.json 里记录的 extras[].sha256 一致后再合并
+```
+
+**兼容性**：含额外路径的包 `MANIFEST.json` 升为 `formatVersion: "2.2"` 并带 `extras` 数组；不含额外路径的包仍是 `2.1`，旧包照常可读可恢复（`package-meta` 只读 `source` 字段）。
 
 ---
 
@@ -145,9 +193,9 @@ scripts/            release-sync-check.mjs（发布一致性闸门）
 
 ## 状态与限制
 
-- 651 / 651 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
+- 742 / 742 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
 - 真机验证：`odoo_backup` 的 `listServers` / `test`（真实 SSH）、`odoo_restore` 状态查询、原生设置分区及其 HTTP 路由。
 - **未执行 / 未授权**：生产主库真实 R1 停机切换、agent 浏览器内点击验证、生产部署。开发全程生产服务器只读。
 - Host 半侧改动需**完全重启 DSH**；Client 半侧硬刷新即可。
 
-完整 0.1.0 → 0.2.1 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
+完整 0.1.0 → 0.2.2 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。

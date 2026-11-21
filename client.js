@@ -140,6 +140,10 @@ window.__ModuleLoader__.load({
           'server.add': '添加服务器', 'server.test': '测试连接',
           'backup.start': '开始备份', 'restore.start': '执行恢复',
           'task.delete': '删除',
+          // v0.2.2：额外路径编辑器文案，回退值与 locale/*.json 保持一致。
+          'extra.title': '额外路径', 'extra.add': '添加额外路径',
+          'extra.name': '额外路径名称', 'extra.path': '额外路径路径',
+          'extra.exclude': '额外路径排除', 'extra.delete': '删除额外路径',
         };
         const locale = ctx.reflect?.get?.('locale');
         let tr;
@@ -151,6 +155,15 @@ window.__ModuleLoader__.load({
 
         // ---- v0.1.8 信任流程纯函数（与 lib/trust.js 同语义，前端即时反馈） ----
         const normFp = (v) => String(v ?? '').trim().replace(/^SHA256:/i, '').trim();
+        // v0.2.2：额外路径回执的体积格式化（与 lib/extra-paths.js humanBytes 同口径）。
+        const fmtBytes = (bytes) => {
+          const n = Number(bytes);
+          if (!Number.isFinite(n) || n < 0) return '未知';
+          if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+          if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+          if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+          return `${n} B`;
+        };
         const FINGERPRINT_CMD = 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub';
         const inputStyle = {
           display: 'block', width: '100%', boxSizing: 'border-box',
@@ -356,7 +369,23 @@ window.__ModuleLoader__.load({
           const [draft, setDraft] = useState({
             name: '', host: '', user: 'root', keyPath: '',
             sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
+            extraPaths: [],
           });
+          // v0.2.2：额外路径行的行内校验错误（名称/路径不合法时不发请求）。
+          const [extraErr, setExtraErr] = useState('');
+          // v0.2.2：额外路径行编辑（在 draft.extraPaths 上增删改）。
+          const patchExtraRow = (i, delta) => setDraft((d) => ({
+            ...d,
+            extraPaths: (d.extraPaths ?? []).map((r, j) => (j === i ? { ...r, ...delta } : r)),
+          }));
+          const removeExtraRow = (i) => setDraft((d) => ({
+            ...d,
+            extraPaths: (d.extraPaths ?? []).filter((_, j) => j !== i),
+          }));
+          const addExtraRow = () => setDraft((d) => ({
+            ...d,
+            extraPaths: [...(d.extraPaths ?? []), { name: '', path: '', exclude: '' }],
+          }));
           // v0.1.8：编辑已有服务器（null = 新增，name = 正在编辑的服务器）
           const [editingName, setEditingName] = useState(null);
           // v0.1.8：信任面板状态，按服务器名隔离
@@ -755,7 +784,8 @@ window.__ModuleLoader__.load({
               !adding && h(Btn, {
                 onClick: () => {
                   setEditingName(null);
-                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '', dbName: '' });
+                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '', dbName: '', extraPaths: [] });
+                  setExtraErr('');
                   setAdding(true); setSaveErr('');
                 },
               }, t('server.add')),
@@ -808,6 +838,51 @@ window.__ModuleLoader__.load({
                   onChange: (e) => setDraft({ ...draft, dbName: e.target.value }),
                   style: inputStyle,
                 }),
+                // v0.2.2：额外路径编辑器。行内 [名称][绝对路径][排除(逗号分隔)] + 删除，
+                // 顶部「添加额外路径」加行；保存时随服务器一起交给既有 saveServers，
+                // 不新增后端路由。名称/路径不合法时只做行内红字提示，不发请求。
+                h('div', {
+                  style: { marginTop: 10, borderTop: `1px solid ${T.border}`, paddingTop: 8 },
+                },
+                  h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+                    h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } },
+                      `${t('extra.title')}（${(draft.extraPaths ?? []).length} 条）`),
+                    h(Btn, {
+                      onClick: () => addExtraRow(),
+                    }, t('extra.add')),
+                  ),
+                  (draft.extraPaths ?? []).map((row, i) => h('div', {
+                    key: `extra-${i}`,
+                    style: { display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' },
+                  },
+                    h('input', {
+                      value: row.name ?? '',
+                      placeholder: t('extra.name'),
+                      'aria-label': t('extra.name'),
+                      onChange: (e) => patchExtraRow(i, { name: e.target.value }),
+                      style: { ...inputStyle, width: 130, marginBottom: 0 },
+                    }),
+                    h('input', {
+                      value: row.path ?? '',
+                      placeholder: t('extra.path'),
+                      'aria-label': t('extra.path'),
+                      onChange: (e) => patchExtraRow(i, { path: e.target.value }),
+                      style: { ...inputStyle, width: 280, marginBottom: 0 },
+                    }),
+                    h('input', {
+                      value: row.exclude ?? '',
+                      placeholder: t('extra.exclude'),
+                      'aria-label': t('extra.exclude'),
+                      onChange: (e) => patchExtraRow(i, { exclude: e.target.value }),
+                      style: { ...inputStyle, width: 190, marginBottom: 0 },
+                    }),
+                    h(Btn, {
+                      tone: 'danger',
+                      onClick: () => removeExtraRow(i),
+                    }, t('extra.delete')),
+                  )),
+                  extraErr && h('div', { style: { color: T.error, fontSize: 12, marginTop: 4 } }, extraErr),
+                ),
                 h('div', { style: { display: 'flex', gap: 8, marginTop: 4 } },
                   h(Btn, {
                     disabled: !draft.name.trim() || !draft.host.trim(),
@@ -819,6 +894,27 @@ window.__ModuleLoader__.load({
                         setSaveErr(`服务器名称已存在：${name}`); return;
                       }
                       const existing = editingName ? servers.find((s) => s.name === editingName) : null;
+                      // v0.2.2：额外路径行校验（与 lib/extra-paths.js 的 NAME_RE 一致）。
+                      // 名称非法或路径不是绝对路径时只做行内提示，不发保存请求。
+                      const extraRows = draft.extraPaths ?? [];
+                      const badExtra = extraRows.find((r) => {
+                        const n = (r.name ?? '').trim();
+                        const p = (r.path ?? '').trim();
+                        if (!n || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(n)) return true;
+                        if (!p || !p.startsWith('/')) return true;
+                        return false;
+                      });
+                      if (extraRows.length > 0 && badExtra) {
+                        setExtraErr('额外路径不合法：名称需字母/数字开头且不超过 32 字符，路径需以 / 开头（绝对路径）');
+                        return;
+                      }
+                      const nextExtras = extraRows.map((r) => ({
+                        name: (r.name ?? '').trim(),
+                        path: (r.path ?? '').trim(),
+                        exclude: String(r.exclude ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+                        maxBytes: null,
+                      }));
+                      setExtraErr('');
                       const nextServer = {
                         // 保留既有服务器的其它字段（odooContainer/pgContainer/dataPath 等），
                         // 避免「编辑只为填库名」却把其它配置清空。
@@ -832,6 +928,8 @@ window.__ModuleLoader__.load({
                         // 编辑时保留已固化指纹（除非用户明确清空/修改），避免误删信任
                         pinnedFingerprint: draft.pinnedFingerprint.trim()
                           || (existing?.pinnedFingerprint ?? ''),
+                        // v0.2.2：额外路径行（未配置则为空数组，保证字段存在）。
+                        extraPaths: nextExtras,
                       };
                       const next = editingName
                         ? servers.map((s) => (s.name === editingName ? nextServer : s))
@@ -840,7 +938,9 @@ window.__ModuleLoader__.load({
                       setDraft({
                         name: '', host: '', user: 'root', keyPath: '',
                         sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
+                        extraPaths: [],
                       });
+                      setExtraErr('');
                       setAdding(false);
                       setEditingName(null);
                     },
@@ -905,7 +1005,13 @@ window.__ModuleLoader__.load({
                           keyPath: s.keyPath ?? '', sshConfigAlias: s.sshConfigAlias ?? '',
                           pinnedFingerprint: s.pinnedFingerprint ?? '',
                           dbName: s.dbName ?? '',
+                          // v0.2.2：编辑时把既有 extraPaths 还原成可编辑行（exclude 数组 → 逗号串）。
+                          extraPaths: (s.extraPaths ?? []).map((x) => ({
+                            name: x.name ?? '', path: x.path ?? '',
+                            exclude: (x.exclude ?? []).join(', '),
+                          })),
                         });
+                        setExtraErr('');
                         setAdding(true); setSaveErr('');
                       },
                     }, '编辑'),
@@ -996,7 +1102,13 @@ window.__ModuleLoader__.load({
                     setOne(s.name, 'backing up...');
                     const { result } = await api('/backup', { server: s.name });
                     if (result?.ok) {
-                      setOne(s.name, `完成：${result.localPath}（${((result.bytes ?? 0) / 1048576).toFixed(1)} MB）`);
+                      // v0.2.2：额外路径（知识库 / hermes）随包打包，回执必须透出，
+                      // 否则用户无法确认知识库真的进了包；无额外路径时不追加任何提示。
+                      const extras = Array.isArray(result.extras) ? result.extras : [];
+                      const extrasText = extras.length
+                        ? `　额外路径：${extras.length} 项 / ${fmtBytes(extras.reduce((a, e) => a + Number(e?.bytes ?? 0), 0))}`
+                        : '';
+                      setOne(s.name, `完成：${result.localPath}（${((result.bytes ?? 0) / 1048576).toFixed(1)} MB）${extrasText}`);
                       // v0.1.14：仅在备份后端确认成功后回填最终加密包路径。
                       // Host 侧已用 completed.json + 存在性 + 加密格式三重校验；
                       // 回填失败绝不影响“备份成功”状态，也绝不覆盖已有恢复路径。

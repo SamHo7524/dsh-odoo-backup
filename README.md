@@ -7,8 +7,8 @@ A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 / Odoo 20 r
 It backs up the database, filestore, addons, runtime dependencies and configuration over SSH, and restores through a temp-database verification, downtime switch and rollback-on-failure state machine. Host-key trust is **fail-closed** — an unpinned or changed host key is refused.
 
 - Bundle package name: `@local/dsh-odoo-backup`
-- Current version: `0.2.1`
-- Install source: `github:SamHo7524/dsh-odoo-backup#v0.2.1`
+- Current version: `0.2.2`
+- Install source: `github:SamHo7524/dsh-odoo-backup#v0.2.2`
 - License: private / internal use (`private: true` in `package.json`)
 
 > **Supported: Odoo 19 and Odoo 20** — both verified on real machines. Backup and restore must happen **within the same major version** (19 → 19, 20 → 20). **Cross-major-version restore (e.g. 19 ↔ 20) is NOT supported**: the precheck version gate refuses it with both versions named. Moving across major versions is a separate upgrade project (migrate first, then start a new backup baseline).
@@ -20,13 +20,13 @@ It backs up the database, filestore, addons, runtime dependencies and configurat
 In DSH, install the bundle directly from this repository:
 
 ```
-github:SamHo7524/dsh-odoo-backup#v0.2.1
+github:SamHo7524/dsh-odoo-backup#v0.2.2
 ```
 
-Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.1):
+Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.2.2):
 
 ```
-dsh-odoo-backup-0.2.1.tgz
+dsh-odoo-backup-0.2.2.tgz
 ```
 
 > Upgrading from `0.1.x`: the plugin was renamed from `dsh-odoo19-backup` to `dsh-odoo-backup` and this repository followed. Uninstall the old bundle (`@local/dsh-odoo19-backup`) first, then install the new one. The runtime entry id (`odoo-backup`) is unchanged, so your servers, passphrase and settings are preserved.
@@ -73,6 +73,7 @@ Each server supports:
 | `keyPath` | Private key path; empty = SSH agent / ssh config alias |
 | `sshConfigAlias` | A `Host` in `~/.ssh/config` — **fastest way to trust a host** (delegates key trust to your SSH config) |
 | `pinnedFingerprint` | A manually verified `SHA256:...` host key |
+| `extraPaths` | **Extra Paths**: absolute server paths packed into the same archive (knowledge base, `~/.hermes`, …); each has `name` / `path` / `exclude` / `maxBytes` |
 
 **First-use checklist**
 
@@ -80,6 +81,53 @@ Each server supports:
 2. Trust the host key — either set `sshConfigAlias`, or click **Scan fingerprint**, verify the fingerprint out-of-band, then paste it into `pinnedFingerprint`. Without one of these, `guardHostKey` refuses the connection (fail-closed, by design).
 3. Click **Test connection** — should return real system info (OS / CPU / memory / Docker).
 4. Set **`passphrase`** — backups are **rejected** without it (R10 mandatory encryption, fail-closed).
+
+---
+
+## Extra Paths (knowledge base / Hermes)
+
+The Odoo chatbot answers from a knowledge base (e.g. `/root/Documents/Obsidian Vault`), and that knowledge base is **not** inside the database — backing up only the database means backing up the answers without the sources. This release folds such directories into the **same encrypted pipeline**: packed remotely → downloaded inside the same outer tar → encrypted by the same `encryptFile`.
+
+In the **server edit form**, click **Add extra path**; each entry has:
+
+| Field | Meaning |
+|:--|:--|
+| `name` | Prefix of the file inside the archive. Starts with a letter/digit, max 32 chars, must not collide with built-ins (`addons` / `pydeps` / `conf` / `dump` / `manifest` / `odoo`) |
+| `path` | **Absolute** path on the server (must start with `/`; spaces and CJK are supported) |
+| `exclude` | Comma-separated `--exclude` patterns. A pattern starting with `./` **anchors to the top level** (`./.git` excludes only the root `.git`, not nested ones) |
+| `maxBytes` | Optional cap; exceeding it fails the whole backup, protecting against a mis-typed huge directory |
+
+**Suggested starting point** (measured on toogel: vault ≈ 111 MiB, full `~/.hermes` ≈ 6.04 GiB):
+
+```
+vault   → /root/Documents/Obsidian Vault   exclude: ./.git, ./.obsidian
+hermes  → /root/.hermes                    exclude: ./cache, ./*.lock
+```
+
+Excluding `cache` and lock files brings `~/.hermes` down to ≈ 4.77 GiB — without it you ship 1.4 GiB of regenerable cache for nothing.
+
+**Three hard constraints (fail-closed, not configurable)**
+
+1. **A missing path fails the entire backup**, and the error lists every offending entry and its path. It will *not* record "missing" and carry on the way the addons step does — otherwise you would believe the knowledge base is in the archive when it is not.
+2. **Space budget before packing**: the remote host needs `extra × 1.5 + dump × 2 + 512 MiB` free; otherwise the run is refused with both readable numbers (required / available).
+3. **Space precheck before downloading**: the local directory needs `archive size × 2.2`; otherwise refused, again with both numbers.
+
+**Extra paths are not automatically restored in this release.** The restore pipeline only handles database / filestore / addons / conf; restoring extra paths is a **manual step** (by design — a knowledge base is a living document and blind overwrites risk data loss):
+
+```bash
+# 1) Obtain the outer tar from the encrypted archive
+#    (the plugin's .tar.enc decrypts with the plugin passphrase into the outer tar)
+# 2) Extract one extra-path archive
+tar -xOf odoo-backup-<ts>.tar ./vault-<ts>.tar.zst > /tmp/vault.tar.zst
+# 3) Verify compression integrity and contents
+zstd -t /tmp/vault.tar.zst
+tar -tf /tmp/vault.tar.zst | head
+# 4) Extract to a scratch directory first — merge after review, never overwrite production directly
+mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
+# 5) Compare sha256 against extras[].sha256 in MANIFEST.json before merging
+```
+
+**Compatibility**: archives that contain extra paths carry `formatVersion: "2.2"` plus an `extras` array in `MANIFEST.json`; archives without them stay at `2.1` and older archives remain readable and restorable (`package-meta` only reads `source`).
 
 ---
 
@@ -145,9 +193,9 @@ The project is **not** a local git checkout during development; releases are pub
 
 ## Status & limitations
 
-- 651 / 651 unit tests pass; `node --check` clean across `index.js`, `client.js`, `lib/*.js` and the release scripts.
+- 742 / 742 unit tests pass; `node --check` clean across `index.js`, `client.js`, `lib/*.js` and the release scripts.
 - Real-machine verified: `odoo_backup` `listServers` / `test` over SSH, `odoo_restore` status, the native settings section and its HTTP routes.
 - **Not executed / not authorized**: real R1 downtime switch on the production primary database, agent-driven browser click-through, production deployment. Production servers were read-only throughout development.
 - Host-side changes require a **full DSH restart**; the Client half only needs a hard refresh.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.2.1), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
+See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.2.2), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.

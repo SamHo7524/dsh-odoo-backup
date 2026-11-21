@@ -18,6 +18,12 @@
     "task.running": "Running",
     "task.done": "Done",
     "task.failed": "Failed",
-    "task.delete": "Delete"
+    "task.delete": "Delete",
+    "extra.title": "Extra paths",
+    "extra.add": "Add extra path",
+    "extra.name": "Extra path name",
+    "extra.path": "Extra path (absolute)",
+    "extra.exclude": "Exclude patterns",
+    "extra.delete": "Remove extra path"
   }
 }

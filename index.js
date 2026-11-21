@@ -45,6 +45,20 @@ export const Config = z.object({
         dbPort: z.number().default(5432).description('数据库端口'),
         dataPath: z.string().description('宿主机上的 odoo data 目录（filestore 父目录）'),
         addonsPath: z.string().description('宿主机上的 addons 目录'),
+        extraPaths: z
+          .array(
+            z.object({
+              name: z.string().required().description('额外路径名称，用于生成产物文件名，如 vault / hermes'),
+              path: z.string().required().description('远端绝对路径，如 /root/Documents/Obsidian Vault'),
+              exclude: z
+                .array(z.string())
+                .default([])
+                .description('tar 排除模式（相对该路径根，如 ./.git 或 *.log）'),
+              maxBytes: z.number().nullable().default(null).description('该条产物体积上限（字节）；超限则备份失败，留空不限制'),
+            }),
+          )
+          .default([])
+          .description('额外路径备份（v0.2.2）：把知识库 / hermes 等目录与数据库打进同一个加密包'),
       }),
     )
     .default([])

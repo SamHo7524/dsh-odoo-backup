@@ -6,6 +6,40 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.2] — 2026-11-21
+
+**Extra-path packing: the knowledge base and Hermes now travel inside the same encrypted backup pipeline as the database.**
+
+### Background
+
+The Odoo chatbot answers business questions by consulting a knowledge base, and neither that knowledge base (`/root/Documents/Obsidian Vault`, measured ≈ 111 MiB) nor Hermes' configuration and state (`/root/.hermes`, ≈ 6.04 GiB when complete) lives inside the database. The plugin previously backed up only `dump.zip` / `addons` / `pydeps` / `odoo.conf` — the outer tar had exactly five top-level entries and no vault or hermes artifact anywhere. The database could be restored; the knowledge that answers the questions could not. The only vault archives on the server were one-off migration artifacts from 2026-10-08–10, and `crontab -l` contained no vault or hermes entry at all, so there had been no automated backup for a long time.
+
+### Added
+
+- New per-server `extraPaths` config: each entry has `name` / `path` / `exclude` / `maxBytes`, up to 8 entries. They are edited inline in the server form and written through the existing `saveServers` channel (no new backend route).
+- The remote packing stage emits one `<name>-<ts>.tar.zst` (or `.gz`) per extra path into the same work directory as the dump, downloads it inside the same outer tar, and encrypts it with the **same** `encryptFile` (`DSHODOO1`, AES-256-GCM + scrypt).
+- `MANIFEST.json` gains an `extras` array (`name` / `path` / `file` / `bytes` / `sha256` / `exclude`) and `formatVersion` moves from `2.1` to **`2.2`**. Archives without extra paths stay at `2.1` and older archives remain readable and restorable (`lib/package-meta.js` only reads `source`).
+- New `packing-extras` progress phase (28% → 44%).
+- Agent tool `odoo_backup`: `listServers` now reports the `extraPaths` count per server (never the paths or keys), and the `backup` receipt prepends a `额外路径：vault 111.0 MB sha256 b51ca028…` line before the raw JSON.
+- The UI backup receipt appends "额外路径：N 项 / 合计体积"; with no extra paths nothing is shown, so older configurations stay noise-free.
+
+### Trade-offs
+
+- **One archive per path, not one merged blob**: a single failing or failing-verification entry leaves the others independently verifiable and manually restorable, and exclude sets can differ per path.
+- **Fail-closed, three hard gates**: (1) a missing path fails the whole backup and lists every offender — unlike the addons step, which records "missing" and still produces an archive, which would make you believe the knowledge base is included when it is not; (2) the remote space budget is `extra × 1.5 + dump × 2 + 512 MiB`, refused with both readable numbers when short; (3) the local pre-download check requires `archive size × 2.2`, likewise refused with both numbers.
+- **Extra paths are not automatically restored in this release**: restore still handles only database / filestore / addons / conf. A knowledge base is a living document and blind overwrites risk data loss, so a manual `tar -x` plus `sha256` comparison is safer (the README has the full command sequence).
+- **Exclude patterns use tar's `./` top-level anchoring**: `./.git` excludes only the root `.git` and does not hit same-named nested directories. Measured behaviour: `--exclude=vault` without `./` matches any path component, which is not what most people expect, so the docs require the `./` prefix.
+
+### Fixed
+
+- **The backup path had no local disk-space precheck**: only remote free space was considered, so a full local volume surfaced as a mid-download failure. `ensureLocalSpace` now validates `archive size × 2.2` before downloading; when `statfs` is unavailable (e.g. ENOSYS) the check is **skipped rather than blocking** the backup.
+- **A vacuous assertion in `test/backup-failclosed.test.js`**: `_execRemote` was passed to `runBackup` but never read, so the test verified nothing. `runBackup` now genuinely accepts `_execRemote` (the single remote-exec entry point `exec`) and the assertion is meaningful again.
+
+### Verification
+
+- New test coverage: `extra-paths.test.js` (39), `extras-runner.test.js` (11), `extras-wiring.test.js` (7), `local-space-precheck.test.js` (5), `config-extra-paths.test.js` (4), `client-extra-paths.test.js` (5), `client-backup-extras-receipt.test.js` (2), `tool-backup-extras.test.js` (5), `docs-extra-paths.test.js` (5).
+- Every task was mutation-tested: relaxed name validation, allowed `..`, disabled the space precheck, dropped the sha check, defaulted parse failures to success, removed the existence check, counted extras as zero bytes, swallowed packing failures, `LOCAL_SPACE_FACTOR` 2.2→1.0, renamed the schema field, and saved an empty array from the UI — all were killed by the tests.
+
 ## [0.2.1] — 2026-11-16
 
 **Desktop app can save servers again: same-origin check now understands the `dsh-app://` forward.**

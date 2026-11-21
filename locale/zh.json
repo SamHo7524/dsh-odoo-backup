@@ -18,6 +18,12 @@
     "task.running": "执行中",
     "task.done": "完成",
     "task.failed": "失败",
-    "task.delete": "删除"
+    "task.delete": "删除",
+    "extra.title": "额外路径",
+    "extra.add": "添加额外路径",
+    "extra.name": "额外路径名称",
+    "extra.path": "额外路径路径",
+    "extra.exclude": "额外路径排除",
+    "extra.delete": "删除额外路径"
   }
 }

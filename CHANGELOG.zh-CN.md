@@ -6,6 +6,40 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.2] — 2026-11-21
+
+**新增「额外路径」打包：知识库与 Hermes 现在与数据库走同一条加密备份链路。**
+
+### 背景
+
+Odoo 的 chatbot 回答业务问题要调用知识库，而知识库（`/root/Documents/Obsidian Vault`，实测约 111 MiB）与 Hermes 的配置/状态（`/root/.hermes`，全量约 6.04 GiB）**都不在数据库里**。此前插件只备 `dump.zip` / `addons` / `pydeps` / `odoo.conf` 四项，外层 tar 顶层实测仅 5 个条目，无任何 vault / hermes 字样 —— 数据库恢复得回来，回答问题的知识却回不来。服务器上现存的 vault 包只有 2026-10-08～10 的一次性迁移产物，`crontab -l` 也没有任何 vault / hermes 条目，等于长期无自动备份。
+
+### 新增
+
+- 服务器配置新增 `extraPaths`：每项含 `name` / `path` / `exclude` / `maxBytes`，最多 8 条。设置页服务器编辑表单内可直接增删，复用既有 `saveServers` 写通道（不新增后端路由）。
+- 远端打包阶段为每条额外路径单独产出 `<name>-<ts>.tar.zst`（或 `.gz`），放进与 dump 相同的 workDir，随外层 tar 一起下载，走**同一个** `encryptFile`（`DSHODOO1`，AES-256-GCM + scrypt）。
+- `MANIFEST.json` 新增 `extras` 数组（每项 `name` / `path` / `file` / `bytes` / `sha256` / `exclude`），并把 `formatVersion` 由 `2.1` 升为 **`2.2`**。不含额外路径的包仍是 `2.1`，旧包照常读取与恢复（`lib/package-meta.js` 只读 `source` 字段）。
+- 进度新增 `packing-extras` 阶段（28% → 44%）。
+- Agent 工具 `odoo_backup`：`listServers` 每台服务器带 `extraPaths` 条数（不泄露路径与密钥）；`backup` 回执在原始 JSON 前追加 `额外路径：vault 111.0 MB sha256 b51ca028…` 一行。
+- 备份完成回执在 UI 上追加「额外路径：N 项 / 合计体积」；无额外路径时不显示任何提示（老配置零噪音）。
+
+### 设计取舍
+
+- **每条路径独立成包**，不合并成一个大包：单条失败或校验失败时其余条目仍可独立验证与手工恢复，且排除集可按路径各自设置。
+- **fail-closed，三处硬闸门**：① 路径不存在即整个备份失败并逐条列出（不像 addons 那样记「缺失」照样出包 —— 那会让人误以为知识库进包了）；② 远端空间预算 `额外体积×1.5 + dump×2 + 512 MiB`，不足即拒绝并给出所需/可用两个可读数字；③ 本地下载前预检 `包体积×2.2`，不足同样拒绝。
+- **本版不做额外路径的自动恢复**：恢复链路仍只处理数据库 / filestore / addons / conf。知识库是活文档，自动覆盖有丢数据风险，手工 `tar -x` + `sha256` 核对更安全（README 给出完整命令）。
+- **排除集采用 tar 的 `./` 顶层锚定语义**：`./.git` 只排根目录的 `.git`，不会误伤子目录同名项；实测 `--exclude=vault`（不带 `./`）匹配的是任意路径分量，行为与直觉不同，故文档明确要求写 `./` 前缀。
+
+### 修复
+
+- **备份缺失本地磁盘空间预检**：下载前只算远端可用空间，本地目录塞满时报错发生在下载中断之后。现在下载前用 `ensureLocalSpace` 校验 `包体积 × 2.2`；`statfs` 不可用（如 ENOSYS）时**跳过而不阻断**备份。
+- **`test/backup-failclosed.test.js` 有一处空转断言**：向 `runBackup` 传 `_execRemote` 却从未被读取，该用例实际什么都没验证。`runBackup` 现在真正接受 `_execRemote`（统一远端执行入口 `exec`），断言恢复有效。
+
+### 验证
+
+- 新增测试覆盖：`extra-paths.test.js`（39 例）、`extras-runner.test.js`（11 例）、`extras-wiring.test.js`（7 例）、`local-space-precheck.test.js`（5 例）、`config-extra-paths.test.js`（4 例）、`client-extra-paths.test.js`（5 例）、`client-backup-extras-receipt.test.js`（2 例）、`tool-backup-extras.test.js`（5 例）、`docs-extra-paths.test.js`（5 例）。
+- 每个任务都做了变异验证：放宽名称校验、允许 `..`、关闭空间预检、丢弃 sha 校验、解析失败默认成功、去掉存在性检查、额外体积按 0 计、吞掉打包失败、`LOCAL_SPACE_FACTOR` 2.2→1.0、schema 字段改名、UI 保存改成空数组 —— 全部被测试杀死。
+
 ## [0.2.1] — 2026-11-16
 
 **桌面端恢复可保存服务器：同源校验现在认得 `dsh-app://` 协议转发。**

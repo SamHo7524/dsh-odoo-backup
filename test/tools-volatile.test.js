@@ -51,8 +51,8 @@ test('TOOLVOL-1 listServers 必须解包 volatile servers', async () => {
   const tool = createOdooBackupTool({ config: { servers: volatile(servers) }, service: fakeService() });
   const out = await tool.execute({ action: 'listServers' });
   assert.equal(out.servers.length, 2);
-  assert.deepEqual(out.servers[0], { name: 'toogel', host: '47.121.205.143', port: 22, user: 'root' });
-  assert.deepEqual(out.servers[1], { name: 'staging', host: '119.29.10.202', port: 22, user: 'root' },
+  assert.deepEqual(out.servers[0], { name: 'toogel', host: '47.121.205.143', port: 22, user: 'root', extraPaths: 0 });
+  assert.deepEqual(out.servers[1], { name: 'staging', host: '119.29.10.202', port: 22, user: 'root', extraPaths: 0 },
     '缺省 port/user 也要回填');
 });
 
