@@ -128,12 +128,36 @@ if (!releasesOnly) {
   // 若干既有测试（service-v0113 / v0117-fix 等）共用固定状态目录与锁文件，
   // 并行跑时偶发互相踩踏（SVC-3 / V17-S2 间歇性失败），会让发布门禁误报。
   // 串行后连续 3 次稳定 646/646，代价是耗时略增，换来门禁可信。
-  const out = execFileSync(NODE, ['--test', '--test-concurrency=1', 'test/**/*.test.js'], { cwd: ROOT, encoding: 'utf8' });
-  const num = (re) => out.split('\n').map((l) => l.match(re)).filter(Boolean).at(-1)?.[1];
-  const pass = num(/^# pass (\d+)/) ?? num(/^ℹ pass (\d+)/);
-  const fail = num(/^# fail (\d+)/) ?? num(/^ℹ fail (\d+)/) ?? '0';
+  //
+  // v0.2.5：测试失败时必须给出**可读的失败清单**。此前 execFileSync 直接抛异常，
+  // 控制台只剩一大坨带转义符的输出，看不出到底哪条红了 —— 门禁拦住了但没人看懂。
+  let out = '';
+  try {
+    out = execFileSync(NODE, ['--test', '--test-concurrency=1', 'test/**/*.test.js'],
+      { cwd: ROOT, encoding: 'utf8' });
+  } catch (err) {
+    out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+  }
+  const lines = out.split('\n');
+  const num = (re) => lines.map((l) => l.match(re)).filter(Boolean).at(-1)?.[1];
+  const pass = num(/^# pass (\d+)/) ?? num(/^ℹ pass (\d+)/) ?? '0';
+  const fail = num(/^# fail (\d+)/) ?? num(/^ℹ fail (\d+)/) ?? '?';
   log(`  pass=${pass} fail=${fail}`);
-  if (fail !== '0') die('测试未全部通过');
+
+  if (fail !== '0') {
+    // 提取失败用例名与首行错误，直接打到 console.error ——— 便于一眼定位。
+    const failed = [...new Set(lines.map((l) => l.match(/^✖ (.+?) \(/)?.[1]).filter(Boolean))];
+    const errors = [...new Set(lines
+      .map((l) => l.match(/^\s+(TypeError|ReferenceError|AssertionError|Error): (.+)$/)?.[0]?.trim())
+      .filter(Boolean))];
+    console.error('\n失败用例：');
+    for (const f of failed.slice(0, 20)) console.error(`  ✖ ${f}`);
+    if (errors.length) {
+      console.error('\n错误摘要：');
+      for (const e of errors.slice(0, 10)) console.error(`  ${e}`);
+    }
+    die(`测试未全部通过（fail=${fail}）—— 修好再发版`);
+  }
 }
 
 // ---------- 3. 打包（统一命名 dsh-odoo-backup-X.Y.Z.tgz） ----------
@@ -157,6 +181,62 @@ if (!existsSync(finalTgz)) {
   log(`  ${tgz} -> ${tgzName}`);
 } else {
   log(`  复用已有 ${tgzName}`);
+}
+
+// ---------- 3b. 验证「真正要发出去的那个 tgz」 ----------
+// v0.2.5：这一步是补上的门禁。此前只测工作区源码，而发出去的是 tgz ——
+// v0.2.2 的 `z.number().nullable()` 就是「工作区能跑、装进 profile 才炸」，
+// 所以必须解开 tgz、用真实 schemastery 加载包内的 index.js，而不是相信工作区。
+log('=== verify packed artifact ===');
+{
+  const { readdirSync, mkdtempSync, writeFileSync } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+
+  // 解到 ROOT 下，这样包内 index.js 向上能找到 ROOT/node_modules（peerDependency 解析路径）
+  const sandbox = join(ROOT, `.packcheck-${version}-${Date.now()}`);
+  mkdirSync(sandbox, { recursive: true });
+  try {
+    execFileSync('tar', ['-xzf', finalTgz, '-C', sandbox], { encoding: 'utf8' });
+
+    const pkgRoot = join(sandbox, 'package');
+    if (!existsSync(join(pkgRoot, 'index.js'))) die('tgz 内缺少 index.js');
+
+    // 包的 essentials 必须齐（少文件 = 装上也白装）
+    for (const rel of ['index.js', 'client.js', 'cordis.patch.yml', 'lib/backup.js',
+      'lib/extra-paths.js', 'lib/extras-runner.js', 'lib/local-space.js', 'lib/tools.js',
+      'lib/service.js', 'locale/zh.json', 'locale/en.json']) {
+      if (!existsSync(join(pkgRoot, rel))) die(`tgz 内缺少 ${rel}`);
+    }
+
+    // 包内 package.json 的版本必须与目标版本一致
+    const packedPkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'));
+    if (packedPkg.version !== version) {
+      die(`tgz 内 package.json 版本(${packedPkg.version}) ≠ 目标(${version})`);
+    }
+    // 包内不能混进 node_modules / test / .packcheck
+    if (existsSync(join(pkgRoot, 'node_modules'))) die('tgz 内不应包含 node_modules');
+    if (existsSync(join(pkgRoot, 'test'))) die('tgz 内不应包含 test 目录');
+
+    // 真正加载包内 index.js（子进程隔离，避免污染本进程的模块缓存）
+    const probe = join(sandbox, '_probe.mjs');
+    writeFileSync(probe, [
+      "const m = await import('./package/index.js');",
+      "const parsed = m.Config({ servers: [{ name: 'toogel', host: 'h',",
+      "  extraPaths: [{ name: 'vault', path: '/root/v', exclude: ['./.git'], maxBytes: null }] }] });",
+      "const servers = m.unwrapVolatile(parsed.servers);",
+      "if (servers[0].extraPaths[0].maxBytes !== null) throw new Error('maxBytes 未保留 null');",
+      "console.log('PACKED_IMPORT_OK ' + Object.keys(m).join(','));",
+    ].join('\n'), 'utf8');
+
+    const r = spawnSync(NODE, [probe], { cwd: sandbox, encoding: 'utf8' });
+    const combined = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    if (r.status !== 0 || !combined.includes('PACKED_IMPORT_OK')) {
+      die(`tgz 内 index.js 无法真实加载 —— 装进 profile 后整个条目会失效：\n${combined.slice(0, 1200)}`);
+    }
+    log('  ✓ 包内 index.js 可加载，Config 能解析真实配置（含 maxBytes=null）');
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 }
 
 if (dryRun) { log('\nDRY-RUN OK（未写远端）'); process.exit(0); }

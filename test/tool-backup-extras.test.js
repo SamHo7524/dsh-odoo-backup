@@ -50,6 +50,15 @@ test('TBX-2 listServers 不外泄密钥/别名/指纹等敏感字段', async () 
   }
 });
 
+test('TBX-2b listServers 的文本回执要显示额外路径条数（否则用户看不出配了没）', async () => {
+  const tool = makeBackupTool();
+  const out = await tool.execute({ action: 'listServers' });
+  const text = tool.output.render({ action: 'listServers' }, out)[0].text;
+  // 配了 2 条的必须显式写出来；配 0 条的不啰嗦。
+  assert.match(text, /toogel[^\n]*2 条额外路径/, `回执应显示 toogel 的额外路径条数，实际：${text}`);
+  assert.doesNotMatch(text, /staging[^\n]*额外路径/, '没有额外路径的服务器不必显示该提示');
+});
+
 test('TBX-3 render 对 backup 结果追加额外路径摘要行', async () => {
   const tool = makeBackupTool();
   const rendered = tool.output.render({ action: 'backup' }, {

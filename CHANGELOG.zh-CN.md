@@ -6,6 +6,87 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.5] — 2026-11-21
+
+**主题不是新功能，而是补上「发版前真正执行过被测代码」这道门禁 —— 并顺手修掉暴露出来的回执缺陷。**
+
+连续三个版本（0.2.2 / 0.2.3 / 0.2.4-hotfix）都是「全量单测通过 → 发出去 → 装上才发现问题」。逐条复盘后定位到同一个结构性原因：
+
+> **测试从未真正执行被测代码。** 测的是源码文本（正则匹配），不是行为。
+
+具体到三次事故：
+
+| 版本 | 症状 | 为什么单测没抓到 |
+|:--|:--|:--|
+| 0.2.2 | 装上后整个条目 `did not activate`，报 `TypeError: z.number(...).nullable is not a function`，设置页消失 | **没有任何测试 import 过 `index.js`**。插件目录无 `node_modules`，测试环境解析不到 `@deepseek-ai/schemastery`，那行代码从未被执行 |
+| 0.2.3 | 备份数据全部成功、产物完整，但任务报 `failed`，抛 `ReferenceError: extrasResult is not defined` | **没有任何测试执行到 `runBackup` 末尾那行 `return`**。既有集成测试全是源码正则；fail-closed 测试在 `return` 之前就 throw 了 |
+| 0.2.5（本次修） | `listServers` 返回值里有 `extraPaths: 2`，但回执文本只有 `toogel → root@...:22`，用户看不出配了几条 | 断言只查数据结构，**不查最终拼出来的文本** |
+
+### 新增：真实加载与激活门禁
+
+**`test/config-loads-and-parses.test.js`（LOAD-1 ~ LOAD-6，6 例）**
+- 真的 `import('../index.js')`，断言导出契约（`name` / `inject` / `apply` / `Config` / `unwrapVolatile`）；
+- 真的把 `Config` 跑一遍：真实服务器配置（含 `extraPaths`、`maxBytes: null`）、字段全缺省、`maxBytes` 为数字，三种形态都验；
+- 按真实调用方式 `unwrapVolatile(parsed.servers)` 取值（`servers` 是 volatile 字段，直接下标取会拿到包装对象——v0.1.15 的 `list.find is not a function` 就是这个坑）；
+- **缺依赖不 skip**：自动找到本机 DSH profile 里的真实 `@deepseek-ai/schemastery`，以目录联接挂到插件根 `node_modules`，然后重试；修不了才报错并给出可操作指令。「静默跳过」正是这个 bug 得以发货的原因。
+
+**`test/apply-activates.test.js`（APPLY-1 ~ APPLY-5，5 例）**
+- 用假 Cordis ctx 把 `apply()` **完整跑一遍**：创建 service、注册两个 Agent 工具、注册 `/odoo-backup` UI 路由前缀；
+- 断言 `odoo_backup` / `odoo_restore` 都存在、`output.schema.type === 'object'`（v0.1.16 真机吃过 `"value" must be an object`）；
+- 断言路由 `kind: 'prefix'`、`path: '/odoo-backup'`、`handler` 是函数；
+- 用**空配置**再跑一遍（首次安装没有任何服务器时 apply 必须能起来）；
+- 最后真的调用注册出来的 `odoo_backup` 工具跑 `listServers`，验证整条 execute 链路，并断言 `keyPath` / `pinnedFingerprint` 不外泄。
+
+### 新增：发版前验「要发出去的那个 tgz」
+
+`scripts/publish-release.mjs` 增加 `=== verify packed artifact ===` 步骤，在 dry-run 和正式发布都会执行：
+- 解开 `dsh-odoo-backup-X.Y.Z.tgz`；
+- 校验包内必备文件齐备（`index.js`、`client.js`、`cordis.patch.yml`、`lib/extra-paths.js` 等 11 项）；
+- 校验包内 `package.json` 版本 == 目标版本；
+- 校验包里**没有**混进 `node_modules` 或 `test`；
+- 在子进程里用真实 schemastery 加载**包内的** `index.js` 并跑一遍 `Config`。
+
+这一条直接对治 v0.2.2：那次工作区能跑、装进 profile 才炸。现在验的是发出去的那个包。
+
+### 修复：测试失败时给出可读失败清单
+
+此前测试门禁失败时 `execFileSync` 直接抛异常，控制台只剩一大坨带转义符的输出，拦住了但没人看得懂。现在提取失败用例名与首行错误，直接打印：
+```
+  pass=744 fail=10
+失败用例：
+  ✖ LOAD-1 index.js 能被真实 import，且导出契约齐备
+  ✖ SCH-1 index.js 不得使用 schemastery 不存在的 .nullable()
+  ...
+错误摘要：
+  TypeError: z.number(...).nullable is not a function
+```
+
+### 修复：`listServers` 回执显示额外路径条数
+
+`lib/tools.js` 的 `listServers` 渲染改为按条数追加括号（只对 `n > 0` 的服务器）：
+
+```
+toogel → root@47.121.205.143:22（2 条额外路径）
+```
+
+新增 `TBX-2b` 断言回执文本里 toogel 那行出现「2 条额外路径」、staging（0 条）那行不出现「额外路径」。
+
+### 验证
+
+- 全量串行单测 **759 / 759 通过**（88 个测试文件，v0.2.4 为 747）。
+- 变异验证（门禁不是摆设，全部被杀）：
+  - `z.union([z.number(), z.const(null)])` → `z.number().nullable()`：LOAD 6 例 + SCH 3 例 + CXP-2 全红，错误文本与 v0.2.2 生产现场完全一致；
+  - 在 `apply()` 里注入 `throw`：APPLY 5 例全红；
+  - 去掉 junction 自动修复：LOAD 门禁仍能自动挂载并全绿（证明它在缺依赖的环境里也能自愈，而不是靠 skip 蒙混）。
+- `scripts/publish-release.mjs --dry-run` 走通：`pass=759 fail=0` → 打包 → `✓ 包内 index.js 可加载，Config 能解析真实配置（含 maxBytes=null）`。
+
+### 教训（写给未来的自己）
+
+1. **「测试通过」不等于「代码能跑」**。正则匹配源码的测试只能防回归，不能防「写错 API」。
+2. **发版前必须验发出去的那个制品**，不是工作区。
+3. **门禁不允许 skip**。缺依赖就修依赖，否则 skip 就是下一次事故的掩体。
+4. **断言要落到用户能看见的那一层**。数据对、文本没显示，对用户就是没做。
+
 ## [0.2.4] — 2026-11-21
 
 **热修：v0.2.3 真机全链路备份在最后一步崩了 —— `extrasResult` 出了作用域，`ReferenceError`。**

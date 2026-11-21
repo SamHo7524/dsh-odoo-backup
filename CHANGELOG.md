@@ -6,6 +6,81 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.5] — 2026-11-21
+
+**Not a feature release — it closes the gate that should have caught the last three bad releases, and fixes the receipt bug that exposed it.**
+
+Three consecutive versions (0.2.2 / 0.2.3 / 0.2.4-hotfix) shipped with full green test suites and still broke on install. The post-mortem identified one structural cause:
+
+> **The tests never actually executed the code under test.** They asserted against source text (regex matching), not behaviour.
+
+| Version | Symptom | Why the suite missed it |
+|:--|:--|:--|
+| 0.2.2 | Entry failed to activate: `TypeError: z.number(...).nullable is not a function`; settings page vanished | **No test ever imported `index.js`**. The plugin dir has no `node_modules`, so `@deepseek-ai/schemastery` was unresolvable and that line never ran |
+| 0.2.3 | Backup data fully succeeded, artifact complete, yet the task reported `failed` with `ReferenceError: extrasResult is not defined` | **No test reached the final `return` of `runBackup`**. Existing integration tests were source regexes; fail-closed tests throw before the return |
+| 0.2.5 (fixed here) | `listServers` returned `extraPaths: 2`, but the rendered text was only `toogel → root@...:22` | Assertions checked the data structure, **never the final rendered text** |
+
+### New: real load and activation gates
+
+**`test/config-loads-and-parses.test.js` (LOAD-1 … LOAD-6)**
+- Actually `import('../index.js')` and assert the export contract (`name` / `inject` / `apply` / `Config` / `unwrapVolatile`).
+- Actually runs `Config`: real server config with `extraPaths` and `maxBytes: null`, all-defaults, and numeric `maxBytes`.
+- Reads values through `unwrapVolatile(parsed.servers)` the way production does — `servers` is a volatile field, and direct indexing yields the wrapper object (this is exactly the v0.1.15 `list.find is not a function` trap).
+- **Never skips on a missing dependency**: it locates the real `@deepseek-ai/schemastery` inside the local DSH profile, junctions it into the plugin's `node_modules`, and retries. Only then does it fail with actionable instructions. Silent skipping is precisely why these bugs shipped.
+
+**`test/apply-activates.test.js` (APPLY-1 … APPLY-5)**
+- Runs `apply()` end to end with a fake Cordis ctx: creates the service, registers both agent tools, registers the `/odoo-backup` UI route prefix.
+- Asserts both tools exist and `output.schema.type === 'object'` (v0.1.16 hit `"value" must be an object` in production).
+- Asserts the route is `kind: 'prefix'` at `/odoo-backup` with a function handler.
+- Re-runs with an empty config — apply must survive a fresh install with zero servers.
+- Finally invokes the registered `odoo_backup` tool for `listServers`, exercising the whole execute path and asserting `keyPath` / `pinnedFingerprint` are not leaked.
+
+### New: verify the artifact that actually ships
+
+`scripts/publish-release.mjs` gains a `=== verify packed artifact ===` step, run on both dry-run and real publish:
+- unpacks `dsh-odoo-backup-X.Y.Z.tgz`;
+- checks all required files are present (`index.js`, `client.js`, `cordis.patch.yml`, `lib/extra-paths.js`, … 11 items);
+- checks the packed `package.json` version equals the target version;
+- checks the tarball contains no `node_modules` and no `test`;
+- loads the **packed** `index.js` with the real schemastery in a child process and runs `Config` on it.
+
+This targets 0.2.2 directly: the workspace ran fine, only the installed copy exploded. Now the shipped package is what gets verified.
+
+### Fixed: readable failure output when the gate fails
+
+Previously a failing suite made `execFileSync` throw and the console showed an escaped blob — blocked, but unreadable. It now prints the failing test names and first-line errors:
+```
+  pass=744 fail=10
+失败用例：
+  ✖ LOAD-1 …
+错误摘要：
+  TypeError: z.number(...).nullable is not a function
+```
+
+### Fixed: `listServers` receipt shows the extra-path count
+
+The `listServers` renderer appends a bracketed count when `n > 0`:
+```
+toogel → root@47.121.205.143:22（2 条额外路径）
+```
+New `TBX-2b` asserts toogel's line carries the count and staging's (0) line does not.
+
+### Verification
+
+- Full serial suite: **759 / 759 pass** (88 files; 747 in v0.2.4).
+- Mutation checks (the gates are not decorative, all killed):
+  - `z.union([z.number(), z.const(null)])` → `z.number().nullable()`: all 6 LOAD + 3 SCH + CXP-2 go red with the exact production error text;
+  - injecting `throw` inside `apply()`: all 5 APPLY go red;
+  - removing the junction auto-repair: the LOAD gate still self-heals instead of skipping.
+- `scripts/publish-release.mjs --dry-run`: `pass=759 fail=0` → pack → `✓ packed index.js loads; Config parses real config (maxBytes=null)`.
+
+### Lessons
+
+1. **"Tests pass" ≠ "the code runs"**. Regex-over-source tests prevent regressions, not wrong API usage.
+2. **Verify the artifact you ship**, not the workspace.
+3. **Gates must not skip.** Fix the dependency; a skip is a cover for the next incident.
+4. **Assert on the layer the user sees.** Correct data that never renders is, to the user, not done.
+
 ## [0.2.4] — 2026-11-21
 
 **Hotfix: the v0.2.3 end-to-end backup crashed on the very last line — `extrasResult` had gone out of scope, `ReferenceError`.**
