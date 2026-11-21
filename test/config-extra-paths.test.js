@@ -26,7 +26,9 @@ test('CXP-2 extraPaths 子项包含 name / path / exclude / maxBytes', () => {
   assert.match(indexFlat, /extraPaths:\s*z\s*\.\s*array\(\s*z\s*\.\s*object\(\s*\{\s*name:\s*z\s*\.\s*string/, '缺少 name');
   assert.match(indexFlat, /path:\s*z\s*\.\s*string/, '缺少 path');
   assert.match(indexFlat, /exclude:\s*z\s*\.\s*array\(z\s*\.\s*string\(\)\)/, '缺少 exclude 数组');
-  assert.match(indexFlat, /maxBytes:\s*z\s*\.\s*number\(\)/, '缺少 maxBytes');
+  // v0.2.3：maxBytes 可空，必须是 union([number, const(null)]) —— schemastery 没有 .nullable()。
+  assert.match(indexFlat, /maxBytes:\s*z\s*\.\s*union\(\[\s*z\s*\.\s*number\(\),\s*z\s*\.\s*const\(null\)\s*\]\)/,
+    '缺少 maxBytes（可空整数需用 z.union([z.number(), z.const(null)])）');
 });
 
 test('CXP-3 未配置 extraPaths 时归一为空数组（服务层据此放行）', () => {

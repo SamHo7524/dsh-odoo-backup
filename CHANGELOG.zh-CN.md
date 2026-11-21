@@ -6,6 +6,26 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.3] — 2026-11-21
+
+**热修：v0.2.2 装不上 —— `index.js` 用了 schemastery 不存在的 `.nullable()`。**
+
+### 修复
+
+- **插件条目激活失败（`1 entry did not activate`），设置页整个不可用。** `index.js` 里 `extraPaths[].maxBytes` 写成 `z.number().nullable().default(null)`，而 `@deepseek-ai/schemastery` 的 `z` 没有 `.nullable()` 方法。入口模块在 **import 阶段**就抛 `TypeError: z.number(...).nullable is not a function`，DSH 于是在激活时放弃整个 `odoo-backup` 条目 —— 不是功能降级，是插件完全加载不了。
+- 改为 `z.union([z.number(), z.const(null)]).default(null)`。三种输入都实测正确：省略字段 → 不写该键；`maxBytes: null` → 保留 `null`；`maxBytes: 1024` → 保留 `1024`。
+
+### 为什么 742 个单测没抓到
+
+**没有任何测试 import `index.js`。** 插件目录没有 `node_modules`，测试环境解析不到 `@deepseek-ai/schemastery`；真实加载只发生在 DSH profile 里。所以这个缺陷在单测里不可见 —— 只有真正装进 profile 才会炸。
+
+现在补了源码级守卫 `test/config-schema-loadable.test.js`（SCH-1~SCH-3）：断言 `index.js` 不出现 `.nullable(` / `.optional(` / `.nullish(`，且 `maxBytes` 必须是 `union+const` 形态。变异验证：把 `union+const` 改回 `.nullable()` → 3 例全红。
+
+### 验证
+
+- `node --import` 真实加载实测：修前 `IMPORT FAIL: TypeError`，修后 `IMPORT OK, exports: Config,apply,inject,name,unwrapVolatile`。
+- 全量串行测试：745 / 745 通过。
+
 ## [0.2.2] — 2026-11-21
 
 **新增「额外路径」打包：知识库与 Hermes 现在与数据库走同一条加密备份链路。**

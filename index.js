@@ -54,7 +54,7 @@ export const Config = z.object({
                 .array(z.string())
                 .default([])
                 .description('tar 排除模式（相对该路径根，如 ./.git 或 *.log）'),
-              maxBytes: z.number().nullable().default(null).description('该条产物体积上限（字节）；超限则备份失败，留空不限制'),
+              maxBytes: z.union([z.number(), z.const(null)]).default(null).description('该条产物体积上限（字节）；超限则备份失败，留空不限制'),
             }),
           )
           .default([])

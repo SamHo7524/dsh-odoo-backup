@@ -6,6 +6,26 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.3] — 2026-11-21
+
+**Hotfix: v0.2.2 would not install — `index.js` used a `.nullable()` that schemastery does not have.**
+
+### Fixed
+
+- **The plugin entry failed to activate (`1 entry did not activate`) and the settings page was entirely unavailable.** `index.js` declared `extraPaths[].maxBytes` as `z.number().nullable().default(null)`, but `@deepseek-ai/schemastery`'s `z` has no `.nullable()` method. The entry module threw `TypeError: z.number(...).nullable is not a function` at **import time**, so DSH abandoned the whole `odoo-backup` entry during activation — not a degraded feature, an unusable plugin.
+- Now `z.union([z.number(), z.const(null)]).default(null)`. All three inputs verified: omitting the field writes no key, `maxBytes: null` stays `null`, and `maxBytes: 1024` stays `1024`.
+
+### Why 742 unit tests missed it
+
+**No test imports `index.js`.** The plugin directory has no `node_modules`, so the test environment cannot resolve `@deepseek-ai/schemastery`; real loading only happens inside a DSH profile. The defect was invisible to unit tests and only fired once installed into the profile.
+
+A source-level guard now exists in `test/config-schema-loadable.test.js` (SCH-1–SCH-3): it asserts `index.js` contains no `.nullable(` / `.optional(` / `.nullish(` and that `maxBytes` uses the `union+const` form. Mutation-verified: reverting `union+const` to `.nullable()` turns all three red.
+
+### Verification
+
+- Real load test with `node --import`: `IMPORT FAIL: TypeError` before the fix, `IMPORT OK, exports: Config,apply,inject,name,unwrapVolatile` after.
+- Full serial suite: 745 / 745 passing.
+
 ## [0.2.2] — 2026-11-21
 
 **Extra-path packing: the knowledge base and Hermes now travel inside the same encrypted backup pipeline as the database.**
