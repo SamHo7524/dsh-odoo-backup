@@ -1,0 +1,274 @@
+import { normalizeRestorePath } from './restore-path.js';
+import { unwrapVolatileList } from './config-value.js';
+import { humanBytes } from './extra-paths.js';
+
+/**
+ * Agent 工具定义（Task 9）。
+ *
+ * 设计原则（user-actions.md「一个操作，两个调用者」）：
+ *  - 工具只做「参数校验 + 授权闸门 + 路由」，真实操作在 service 里实现一次
+ *  - UI 与 Agent 共用同一个 service，避免两套逻辑漂移
+ *  - 破坏性恢复必须持 confirmToken：绑定目标、5 分钟有效、一次性
+ */
+
+function findServer(config, name) {
+  // v0.1.15：`Config.servers` 是 .volatile() 字段，运行时是 { get() } 活引用；
+  // 不解包会在真机抛 "list.find is not a function"（单元测试注入普通数组测不出）。
+  const list = unwrapVolatileList(config?.servers);
+  return list.find((s) => s.name === name);
+}
+
+function requireServer(config, name) {
+  if (!name) throw new Error('缺少 server 参数');
+  const server = findServer(config, name);
+  if (!server) throw new Error(`未找到服务器: ${name}`);
+  return server;
+}
+
+/** 从配置里取完整 SSH 连接参数（工具层不需要，服务层需要）。 */
+export function serverConnection(server) {
+  return {
+    name: server.name,
+    host: server.host,
+    port: server.port ?? 22,
+    user: server.user ?? 'root',
+    keyPath: server.keyPath,
+    sshConfigAlias: server.sshConfigAlias,
+    pinnedFingerprint: server.pinnedFingerprint,
+  };
+}
+
+/**
+ * v0.2.2：把额外路径打包回执渲染成一行人类可读摘要。
+ * 每条形如 `额外路径：vault 111.0 MB sha256 b51ca028…`；无额外路径时返回空串。
+ */
+export function renderExtrasSummary(value) {
+  const extras = Array.isArray(value?.extras) ? value.extras : [];
+  if (!extras.length) return '';
+  const parts = extras.map((e) => {
+    const sha = String(e?.sha256 ?? '').slice(0, 8);
+    return `额外路径：${e?.name ?? '?'} ${humanBytes(e?.bytes ?? 0)}${sha ? ` sha256 ${sha}…` : ''}`;
+  });
+  return parts.join('\n');
+}
+
+// ---------------- odoo_backup（只读 + 备份） ----------------
+
+export function createOdooBackupTool({ config, service }) {
+  return {
+    name: 'odoo_backup',
+    description:
+      'Odoo 19 / 20 备份与检查：测试连接、扫描实例、执行备份、列出配置的服务器、' +
+      '对账外部依赖的灾备覆盖（scanExternalDeps，只读，不写入配置）。' +
+      '该工具不修改生产数据，可安全重复调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['test', 'discover', 'backup', 'listServers', 'fingerprint', 'pin', 'scanExternalDeps'],
+          description: 'test=测连接 / discover=扫描实例 / backup=执行备份 / listServers=列出配置的服务器 / fingerprint=扫描主机指纹（只读，供人工核对） / pin=把人工核对过的指纹固化进 known_hosts / scanExternalDeps=对账外部依赖的灾备覆盖（只读扫描，不写入配置）',
+        },
+        server: { type: 'string', description: '配置里的服务器名' },
+        fingerprint: { type: 'string', description: 'action=pin 时必填：由 fingerprint 扫描得到、经人工核对的 SHA256 指纹' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {},
+      },
+      render: (args, value) => {
+        if (args?.action === 'listServers') {
+          // v0.1.16：返回值统一为对象 { ok, servers }；仍容忍旧的裸数组形态。
+          const list = Array.isArray(value) ? value : (Array.isArray(value?.servers) ? value.servers : []);
+          if (!list.length) return [{ type: 'text', text: '尚未配置服务器。' }];
+          return [{
+            type: 'text',
+            // v0.2.4：配了额外路径的服务器要显式写出来。数据里早就有 extraPaths 计数，
+            // 但回执不显示，用户在列表里根本看不出知识库到底配没配。
+            text: list
+              .map((s) => {
+                const n = s.extraPaths ?? 0;
+                return `${s.name} → ${s.user}@${s.host}:${s.port}${n > 0 ? `（${n} 条额外路径）` : ''}`;
+              })
+              .join('\n'),
+          }];
+        }
+        // v0.2.6：外部依赖对账的正文就是那张报告——把 report 原样放在最前面，
+        // JSON 跟在后面供需要结构化数据的调用方使用。不要只丢 JSON：报告头
+        // （四档计数 + 覆盖分布 + 容量 + 探针状态）正是用户要读的东西。
+        if (args?.action === 'scanExternalDeps' && typeof value?.report === 'string' && value.report) {
+          return [{ type: 'text', text: `${value.report}\n\n${JSON.stringify(value, null, 2)}` }];
+        }
+        // v0.2.2：backup 结果追加额外路径摘要行；无额外路径时不追加。
+        const summary = args?.action === 'backup' ? renderExtrasSummary(value) : '';
+        const json = JSON.stringify(value, null, 2);
+        return [{ type: 'text', text: summary ? `${summary}\n\n${json}` : json }];
+      },
+    },
+    async execute(args) {
+      const action = args?.action;
+      switch (action) {
+        case 'listServers':
+          // v0.1.15：servers 必须先解包 volatile 再 .map()。
+          // v0.1.16：返回对象而不是裸数组——output.schema 声明 type: object，
+          // 返回数组会被 DSH 以 `"value" must be an object` 拒绝（真机实证）。
+          return {
+            ok: true,
+            servers: unwrapVolatileList(config?.servers).map((s) => ({
+              name: s.name, host: s.host, port: s.port ?? 22, user: s.user ?? 'root',
+              // v0.2.2：只暴露额外路径条数（计数），不暴露路径/排除等内部细节。
+              extraPaths: (s.extraPaths ?? []).length,
+            })),
+          };
+        case 'test':
+          requireServer(config, args.server);
+          return service.test(args.server);
+        case 'discover':
+          requireServer(config, args.server);
+          return service.discover(args.server);
+        case 'backup':
+          requireServer(config, args.server);
+          return service.backup(args.server);
+        case 'scanExternalDeps': {
+          requireServer(config, args.server);
+          // v0.2.6：只把 extraPaths 传下去（扫描需要知道覆盖线在哪），
+          // 不传密钥/指纹等连接细节；扫描层自己不做任何写入。
+          const srv = findServer(config, args.server);
+          return service.scanExternalDeps(args.server, unwrapVolatileList(srv?.extraPaths) ?? []);
+        }
+        case 'fingerprint':
+          requireServer(config, args.server);
+          return service.fingerprint(args.server);
+        case 'pin':
+          requireServer(config, args.server);
+          if (!args.fingerprint) throw new Error('缺少 fingerprint 参数：请先扫描并人工核对');
+          return service.pin(args.server, args.fingerprint);
+        default:
+          throw new Error(`未知 action: ${action}`);
+      }
+    },
+  };
+}
+
+// ---------------- odoo_restore（破坏性，需 confirmToken） ----------------
+
+export function createOdooRestoreTool({ config, service, tokenStore }) {
+  return {
+    name: 'odoo_restore',
+    description:
+      'Odoo 19 / 20 恢复：会覆盖目标数据库。流程为安全备份→临时恢复→验证→停机切换→验证，失败自动回滚。' +
+      '必须先调 action=precheck 获取 confirmToken，用户确认后再调 action=restore。' +
+      'confirmToken 绑定服务器与备份包，5 分钟内有效且只能使用一次。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['precheck', 'restore', 'status'],
+          description: 'precheck=预检并生成 token / restore=执行恢复 / status=查看任务状态',
+        },
+        server: { type: 'string', description: '目标服务器名' },
+        packagePath: { type: 'string', description: '本地备份包完整路径' },
+        neutralize: { type: 'boolean', description: '是否中立化（防误发邮件），默认 false' },
+        confirmToken: { type: 'string', description: 'restore 时必填，由 precheck 返回' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {},
+      },
+      render: (args, value) => {
+        if (args?.action === 'precheck' && value?.confirmToken) {
+          const verLine =
+            value.sourceVersion || value.targetVersion
+              ? `源（备份包）：${value.sourceVersion || '(未知)'}　目标机：${value.targetVersion || '(未知)'}\n` +
+                (value.versionCheck && value.versionCheck !== 'unknown'
+                  ? `版本检查：${value.versionCheck}\n`
+                  : '版本检查：unknown（已放行但风险自负）\n')
+              : '';
+          return [{
+            type: 'text',
+            text:
+              `${verLine}` +
+              `confirmToken: ${value.confirmToken}\n` +
+              `有效期：${value.expiresInSeconds} 秒（一次性，绑定服务器与备份包）\n\n` +
+              `${value.warning ?? ''}`,
+          }];
+        }
+        return [{ type: 'text', text: JSON.stringify(value, null, 2) }];
+      },
+    },
+    async execute(args) {
+      const action = args?.action;
+      // 规范化与 Host UI 路由一致；token 绑定与 restore 校验都使用同一规范值。
+      const packagePath = normalizeRestorePath(args?.packagePath);
+
+      if (action === 'precheck') {
+        requireServer(config, args.server);
+        if (!packagePath) throw new Error('缺少 packagePath 参数');
+        const neutralize = Boolean(args.neutralize);
+
+        // v0.1.17：预检必须先把「源版本 → 目标版本」的结论讲清楚，跨大版本当场拒绝，
+        // 绝不发 token 让用户去执行一次注定失败的恢复。
+        const preview = await service.inspectRestore(args.server, packagePath);
+        const gate = preview?.versionGate;
+        if (gate && gate.ok === false) {
+          throw new Error(gate.message);
+        }
+
+        const token = tokenStore.create({
+          server: args.server,
+          packagePath,
+          neutralize,
+        });
+        return {
+          ok: true,
+          confirmToken: token,
+          expiresInSeconds: 300,
+          boundTo: { server: args.server, packagePath, neutralize },
+          sourceDbName: preview?.sourceDbName ?? null,
+          targetDbName: preview?.targetDbName ?? null,
+          sourceVersion: preview?.sourceVersion ?? '',
+          targetVersion: preview?.targetVersion ?? '',
+          versionCheck: gate?.ok === false ? 'blocked' : gate?.level ?? 'unknown',
+          warning:
+            (gate?.warning ? `${gate.warning}\n\n` : '') +
+            (gate?.ok ? `版本预检：${gate.message}\n\n` : '') +
+            '确认后将覆盖目标数据库。请核对：服务器、备份包路径、neutralize 选项。' +
+            '切换成功后正式环境将回到备份包对应的业务时间点。',
+        };
+      }
+
+      if (action === 'restore') {
+        if (!args.confirmToken) throw new Error('缺少 confirmToken，请先调 action=precheck');
+        requireServer(config, args.server);
+        if (!packagePath) throw new Error('缺少 packagePath 参数');
+        const neutralize = Boolean(args.neutralize);
+
+        // 授权闸门：不匹配/过期/已用过都会抛错，绝不会走到 service.restore。
+        tokenStore.verify(args.confirmToken, {
+          server: args.server,
+          packagePath,
+          neutralize,
+        });
+
+        return service.restore(args.server, null, packagePath, { neutralize });
+      }
+
+      if (action === 'status') {
+        return service.status();
+      }
+
+      throw new Error(`未知 action: ${action}`);
+    },
+  };
+}

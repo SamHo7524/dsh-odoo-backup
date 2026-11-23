@@ -189,7 +189,7 @@ if (!existsSync(finalTgz)) {
 // 所以必须解开 tgz、用真实 schemastery 加载包内的 index.js，而不是相信工作区。
 log('=== verify packed artifact ===');
 {
-  const { readdirSync, mkdtempSync, writeFileSync } = await import('node:fs');
+  const { readdirSync, mkdtempSync, writeFileSync, statSync } = await import('node:fs');
   const { spawnSync } = await import('node:child_process');
 
   // 解到 ROOT 下，这样包内 index.js 向上能找到 ROOT/node_modules（peerDependency 解析路径）
@@ -202,11 +202,30 @@ log('=== verify packed artifact ===');
     if (!existsSync(join(pkgRoot, 'index.js'))) die('tgz 内缺少 index.js');
 
     // 包的 essentials 必须齐（少文件 = 装上也白装）
-    for (const rel of ['index.js', 'client.js', 'cordis.patch.yml', 'lib/backup.js',
-      'lib/extra-paths.js', 'lib/extras-runner.js', 'lib/local-space.js', 'lib/tools.js',
-      'lib/service.js', 'locale/zh.json', 'locale/en.json']) {
+    for (const rel of ['index.js', 'client.js', 'cordis.patch.yml',
+      'locale/zh.json', 'locale/en.json']) {
       if (!existsSync(join(pkgRoot, rel))) die(`tgz 内缺少 ${rel}`);
     }
+
+    // v0.2.6：lib 下的**每一个** .js 都必须在 tgz 里，用工作区实际文件推导，
+    // 不再维护写死清单。v0.2.5 的 `files` 只写了 `lib/*.js`（npm glob 的 `*`
+    // 不跨目录），8 个 `lib/discovery/*.js` 一个都没进包，而写死清单里恰好
+    // 没有它们 —— 门禁全绿、装上就是 import 失败。
+    const walkLib = (dir, acc = []) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walkLib(full, acc);
+        else if (name.endsWith('.js')) acc.push(full);
+      }
+      return acc;
+    };
+    const missingLib = walkLib(join(ROOT, 'lib'))
+      .map((f) => f.slice(ROOT.length + 1).split('\\').join('/'))
+      .filter((rel) => !existsSync(join(pkgRoot, rel)));
+    if (missingLib.length) {
+      die(`tgz 内缺少 ${missingLib.length} 个 lib 模块（package.json 的 files 未覆盖）：\n  ${missingLib.join('\n  ')}`);
+    }
+    log(`  ✓ lib 下所有 .js 都已进包`);
 
     // 包内 package.json 的版本必须与目标版本一致
     const packedPkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'));

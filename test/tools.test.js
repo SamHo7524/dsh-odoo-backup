@@ -53,7 +53,9 @@ test('odoo_backup: 工具元数据与参数 schema 完整', () => {
   assert.deepEqual(backupTool.parameters.required, ['action']);
   assert.deepEqual(
     [...backupTool.parameters.properties.action.enum].sort(),
-    ['backup', 'discover', 'fingerprint', 'listServers', 'pin', 'test'],
+    // v0.2.6：新增 scanExternalDeps（只读对账外部依赖的灾备覆盖）。
+    // 这是契约扩展不是回归——旧断言在此同步。
+    ['backup', 'discover', 'fingerprint', 'listServers', 'pin', 'scanExternalDeps', 'test'],
   );
   assert.ok(backupTool.parameters.properties.fingerprint,
     'pin 动作需要 fingerprint 参数来传递人工核对过的指纹');

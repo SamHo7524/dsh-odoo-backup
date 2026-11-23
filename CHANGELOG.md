@@ -6,6 +6,59 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.6] — 2026-11-23
+
+**Theme: external-dependency discovery Phase 1 (`scanExternalDeps`, read-only), plus closing a packaging gap in the release gate.**
+
+### New: `odoo_backup action=scanExternalDeps` (read-only)
+
+Scans a server's external dependencies and reconciles them against the backup coverage, emitting four buckets — **suggest / covered / confirm / overflow** — plus a "Odoo module → external service → six asset classes" dependency graph. **Writes no configuration**, starts/stops no services, never modifies `extraPaths`.
+
+- **Four evidence layers**: L1-odoo (`addonsPath` / `dataPath` / `pydepsPath`, high) / L2-config (code path literals + the L2 packed list, **low — may never produce a suggestion on its own**) / L3-runtime (container `Mounts.Source`, high, **no container-internal path mapping**) / L4-systemd (`WorkingDirectory` + `EnvironmentFile`, high, `--state=running` only).
+- **Five coverage states**: `main` / `extraPaths` / `l2` / `none` are mutually exclusive; `unverified` is an **additive risk flag** (a directory appearing in a backup list does not mean the feature can be fully restored).
+- **Six asset classes**: `config` / `data` / `files` / `db` / `api` / `recovery`. A missing class is rendered as "not found" rather than omitted. Link strength is `explicit > inferred > unknown` — no guessed edges. `api` reports key names and `shape=***` only, never values.
+- **Overflow is never truncated**: entries beyond `MAX_EXTRAS` stay fully listed — capacity limits writes, not discovery. Paths excluded by an `extraPaths` rule land in "confirm" with "fix that exclusion rather than adding a new path", instead of silently vanishing.
+- **Decision chain**: covered → actively excluded → probe failed → not probed → missing → unreadable → static-literal-only → single file → DB physical directory → image install tree → suggest / overflow. **Every "confirm" carries an actionable reason.**
+
+### Fixed: five classes of false positives found on the real host
+
+| False positive | Fix |
+|:--|:--|
+| `/etc/default`, `/etc/sysconfig`, `/etc/localtime` treated as business data | New `pathKind='system'` with **precise** system areas (8 prefixes + 15 exact files). Never a bare `/etc` prefix — that would wrongly swallow `/etc/systemd/system` and `/etc/cron.d/*` |
+| 11 openresty `log` / `root` / `modules` / `conf/*` entries | New `'nondata'` (11 basenames, **exact basename match only** — `query_log.db`'s basename is not `log`) + `isInstallTreePath()` |
+| The already-backed-up `odoo.conf` reported as "not backed up at all" | `discover()` returns the **container** path while candidates are host paths. Added `mapContainerPathToHost()` + `hostConfPath`; both are now checked |
+| PostgreSQL physical data directory (953 MB) suggested for packaging | `isDbPhysicalData()` → confirm, "covered by pg_dump / dump.zip logical export" |
+
+### Fixed: `package.json` `files` missed a subdirectory (**the new feature would fail to import after install**)
+
+`files` listed only `lib/*.js`, and in npm/pnpm glob semantics `*` **does not cross directories** — so all 8 new `lib/discovery/*.js` files were absent from the tarball (measured: `discovery` hits **0** inside the tgz). All 907 local tests passed and the release gate passed too, because the gate used a **hard-coded list** that happened to omit them.
+
+- `files` now also lists `lib/discovery/*.js` (measured: tgz 43 → **51** entries, `lib/` 34 → **42**, discovery **8/8**).
+- `scripts/publish-release.mjs`'s `=== verify packed artifact ===` now **walks the workspace `lib/`** and checks each module exists inside the tgz, failing with the full list; the hard-coded list is gone.
+- New `test/package-files-coverage.test.js` (PKG-1…PKG-4): `files` must cover every `.js` under `lib` (including subdirectories); the whole `lib/discovery` directory must be covered; every relative `.js` import between `index.js` and `lib` must exist and be covered; and the release gate must derive rather than hard-code.
+
+### Verification
+
+- Full serial suite: **907 / 907 pass** (99 test files; v0.2.5 was 759).
+- The 10 discovery test files total **144 cases**: paths(25) / coverage(12) / graph(12) / collectors(24) / scan(21) / services(13) / index(5) / noise(24) / l2-scope(3) / tool(5).
+- **Mutation testing: 12/12 killed** — silent overflow drop, missing reason, static literals leaking into suggestions, no degradation on probe failure, suggesting non-existent paths, no single-file degradation, no db-physical degradation, no install-tree degradation, broken system-area detection, broken host-conf detection, broken nondata detection, guessing `isDir` when unknown, and skipped de-duplication of ignored entries.
+  - **2 of them survived the first round**, both because the assertion was too loose: `>= N` instead of an exact set, and checking only the bucket instead of the reason (that path fell through to the "unreadable" branch — same bucket, different reason). Tightened to exact sets plus per-item reason text.
+- **Real-host acceptance (AC-1…AC-10): 10/10**. All five coverage states have samples (`main 3 / extraPaths 7 / l2 8 / none 14`); bucket and state counts both equal the total of 32; with `maxExtras=3` both overflow entries stay fully listed; zero secret values; zero static-literal entries in suggestions.
+- **AC-6 (scan writes nothing) took three attempts**, each a measurement mistake: ① the fingerprint window was polluted by a temporary unit → reordered; ② comparing `/root/.hermes` entry counts — the hermes gateway was writing it (4 entries changed mtime within 12 s) → live directories no longer participate in mtime/entry-count comparison, replaced by "key file md5 unchanged + our temp-script leftovers == 0"; ③ a leftover of `1` was an **observer effect** (the acceptance script's own `ssh()` had written `/tmp/.dsh-ac-$$.sh`) → exclude `$0`.
+- **Real-host result (8.3 s, 0 warnings)**: suggest **2**, covered **18**, confirm **12**, overflow **0**; 32 discovered; ignored (outside the four buckets) 10 system release files, 1 log/cache dir, 0 over-broad paths.
+- Backup core `lib/backup.js` / `lib/service.js` / `lib/extras-runner.js` / `lib/extra-paths.js`: **zero changes**.
+
+### What the scan surfaced (a system fact, not a code defect)
+
+The scan found a **fourth business system nobody had mentioned**: an `attendance` container (`python:3.14.0`, Flask attendance app) at `/root/attendance-system`, 122.2 MB — of which `venv` is 98%, leaving 2,109,328 B of real data. Its `attendance.db` is still being written, `SECRET_KEY.txt` is plaintext, and `.git` holds 15 uncommitted changes. **Whether to back it up is pending a business decision.**
+
+This is exactly the problem the feature exists to solve: coverage must no longer depend on human memory and hand-picked directories.
+
+### Still open (7 items)
+
+Whether `/root/attendance-system` joins `extraPaths`; whether WAF `1pwaf/data` is backed up; `web-cs` needs a `./scripts/__pycache__` exclude; automated scheduling for L2; a GUI entry hint for the extra-path editor; the unexpanded `/etc/default/%p` specifier in the dependency graph; and **L2-config static literals yielding 0 hits on the real host — currently the weakest layer**.
+
+---
 ## [0.2.5] — 2026-11-21
 
 **Not a feature release — it closes the gate that should have caught the last three bad releases, and fixes the receipt bug that exposed it.**

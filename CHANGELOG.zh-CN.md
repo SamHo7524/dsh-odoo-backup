@@ -6,6 +6,59 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.6] — 2026-11-23
+
+**主题：外部依赖发现 Phase 1（`scanExternalDeps`，只读）+ 补掉一个「打包漏文件」的发版门禁缺口。**
+
+### 新增：`odoo_backup action=scanExternalDeps`（只读）
+
+扫描服务器上的外部依赖，对账灾备覆盖，输出「建议新增 / 已覆盖 / 待确认 / 超出容量」四档，并给出「Odoo 模块 → 外部服务 → 六类资产」依赖图。**不写入任何配置**，不启停服务，不改 `extraPaths`。
+
+- **四层证据**：L1-odoo（`addonsPath`/`dataPath`/`pydepsPath`，高）/ L2-config（代码路径字面量 + L2 已打包清单，**低，不得单独产出建议**）/ L3-runtime（容器 `Mounts.Source`，高，**不做容器内路径映射**）/ L4-systemd（`WorkingDirectory` + `EnvironmentFile`，高，只扫 `--state=running`）。
+- **覆盖五态**：`main` / `extraPaths` / `l2` / `none` 互斥，另加 `unverified` 作为**叠加风险标记**（目录在备份清单里 ≠ 功能可完整恢复）。
+- **六类资产**：`config` / `data` / `files` / `db` / `api` / `recovery`；缺哪类**显式写「未发现」**，不省略行。关联强度 `explicit > inferred > unknown`，认不出就不编边；`api` 只输出键名与 `shape=***`，永不输出值。
+- **四档不截断**：超出 `MAX_EXTRAS` 的条目**完整保留在报告里**——容量是写入限制，不能变成发现能力上限。命中 exclude 的路径进「待确认」并说明「请改排除规则而不是新增路径」，不静默消失。
+- **判定链**：已覆盖 → 主动排除 → 探针失败 → 探针未覆盖 → 不存在 → 不可读 → 静态线索单独 → 单文件 → 数据库物理目录 → 镜像安装树 → 建议新增 / 超出容量。**每条 confirm 必须带可执行理由**。
+
+### 修复：五类真机误报
+
+| 误报 | 修法 |
+|:--|:--|
+| `/etc/default`、`/etc/sysconfig`、`/etc/localtime` 被当业务数据 | 新增 `pathKind='system'`，只收**精确系统区**（`/etc/default` 等 8 个前缀 + 15 个精确文件）。绝不写 `/etc` 前缀，否则 `/etc/systemd/system`、`/etc/cron.d/*` 被误伤 |
+| openresty 的 `log`/`root`/`modules`/`conf/*` 共 11 条噪声 | 新增 `'nondata'`（11 个 basename，**只按 basename 精确比**——`query_log.db` 的 basename 不是 `log`）+ `isInstallTreePath()` |
+| 已备份的 `odoo.conf` 被判「完全未备份」 | `discover()` 给的是**容器内路径**、候选是宿主机路径。新增 `mapContainerPathToHost()` + `hostConfPath`，`confPath` 与 `hostConfPath` 都判 |
+| PostgreSQL 物理数据目录（953 MB）进「建议新增」 | `isDbPhysicalData()` → 待确认，理由「应由 pg_dump / dump.zip 逻辑导出覆盖」 |
+
+### 修复：`package.json` 的 `files` 漏掉子目录（**会导致新功能装上就 import 失败**）
+
+`files` 里只有 `lib/*.js`，而 npm/pnpm 的 glob 中 `*` **不跨目录** → 新增的 8 个 `lib/discovery/*.js` 一个都没进 tgz（实测 tgz 内 `discovery` 命中 **0**）。本地 907 个测试全绿、发布门禁也全绿，因为门禁用的是一张**写死清单**，恰好没写它们。
+
+- `files` 补 `lib/discovery/*.js`（实测 tgz 由 43 条目 → **51 条目**，`lib/` 34 → **42**，discovery **8/8** 进包）。
+- `scripts/publish-release.mjs` 的 `=== verify packed artifact ===` 改为**遍历工作区 `lib/` 推导**必备文件，逐个核对 tgz 内是否存在，缺失即 `die` 并列出清单；不再维护写死清单。
+- 新增 `test/package-files-coverage.test.js`（PKG-1…PKG-4）：`files` 必须覆盖 `lib` 下每个 `.js`（含子目录）；`lib/discovery` 整目录必须被覆盖；`index.js` 与 `lib` 之间互相 import 的每个目标必须存在且被覆盖；发布门禁必须用推导而非写死清单。
+
+### 验证
+
+- 全量串行：**907 / 907 通过**（99 个测试文件；v0.2.5 为 759）。
+- discovery 相关 10 个测试文件合计 **144 例**：paths(25) / coverage(12) / graph(12) / collectors(24) / scan(21) / services(13) / index(5) / noise(24) / l2-scope(3) / tool(5)。
+- **变异验证 12 项全杀**：溢出静默丢弃、不写理由、静态线索进建议、探针失败不降级、不存在路径仍建议、单文件不降级、db-physical 不降级、install-tree 不降级、系统发布件判定失效、宿主机 conf 判定失效、nondata 判定失效、`isDir` 未知位猜成 true、忽略项不去重。
+  - 其中 **2 项首轮存活**，都因断言太松：`>= N` 而非精确集合；只看档次不看理由（那条路径顺落到「不可读」分支，档次没变、只有理由变了）。已加严为精确集合 + 逐条验理由文本。
+- **真机验收（AC-1～AC-10）10/10 通过**：覆盖五态全有样例（`main 3 / extraPaths 7 / l2 8 / none 14`）、四档与各态计数均等于总数 32、`maxExtras=3` 时超限 2 条完整保留、无任何密钥值、静态线索 0 条进建议。
+- **AC-6（扫描零写入）返工三次**，每次都是度量方法错：① 指纹窗口被临时 unit 污染 → 移序；② 把 `/root/.hermes` 条目数纳入比对，实测是 hermes gateway 自己在写（12 秒内 4 个条目 mtime 在动）→ 活目录不参与 mtime/条目数比对，改用「关键文件 md5 不变 + 临时脚本残留 == 0」；③ 残留报 1 是**观察者效应**（验收脚本自己的 `ssh()` 落了 `/tmp/.dsh-ac-$$.sh`）→ 排除 `$0`。
+- **真机结果（8.3 s，warnings 0）**：建议新增 **2**、已覆盖 **18**、待确认 **12**、超出容量 **0**；发现总数 32；已忽略（不计入四档）系统发布件 10 条、日志/缓存 1 条、过宽 0 条。
+- 备份核心 `lib/backup.js` / `lib/service.js` / `lib/extras-runner.js` / `lib/extra-paths.js` **零改动**。
+
+### 附：本次扫描发现的事（不是代码缺陷，是系统事实）
+
+扫描找到一个**人工从未提及的第四个业务系统**：`attendance` 容器（`python:3.14.0`，Flask 考勤），`/root/attendance-system` 122.2 MB。其中 `venv` 占 98%，排掉后真实业务数据仅 2,109,328 B；`attendance.db` 仍在写、`SECRET_KEY.txt` 明文、`.git` 有 15 处未提交改动。**是否纳入备份待业务确认。**
+
+这正是本功能要解决的问题：灾备覆盖不能再靠人工记忆和手工挑目录。
+
+### 仍未决（7 项）
+
+`/root/attendance-system` 是否入 `extraPaths`、WAF `1pwaf/data` 是否备份、`web-cs` 补 `./scripts/__pycache__` exclude、L2 自动定时执行、GUI 额外路径编辑器入口提示、依赖图里 `/etc/default/%p` 说明符未展开、**L2-config 静态线索真机 0 条（当前最弱一层）**。
+
+---
 ## [0.2.5] — 2026-11-21
 
 **主题不是新功能，而是补上「发版前真正执行过被测代码」这道门禁 —— 并顺手修掉暴露出来的回执缺陷。**
