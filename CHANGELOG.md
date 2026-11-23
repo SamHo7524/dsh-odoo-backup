@@ -6,6 +6,53 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.8] — 2026-11-23
+
+**Theme: bring "standalone business systems" into the dependency graph — Discovery no longer sees only services referenced by Odoo modules.**
+
+### Background (user ruling m05214, item 5)
+
+> "Discovery must not look only for Odoo module dependencies; it must also identify business systems that run independently on the server. The second kind must not be silently ignored just because no Odoo module references it. We cannot wait until disaster recovery to discover a fourth or fifth business system that was never covered."
+
+Real-machine validation proved the point immediately: `attendance` (a `python:3.14.0` container running an attendance system) had been running on this host for over a month and **nobody had ever added it to the backup scope**. It has no systemd unit and no Odoo module references it, so the old implementation dropped it entirely.
+
+### Defects fixed (five, all surfaced by real output)
+
+1. **`buildServices()` accepted `containers` and then wrote `void containers;`** — it only walked systemd units, so container-hosted services vanished. Fix: a container assembly section marking `origin:'container'` / `standalone:true` / `link:'unknown'` (no invented module edges), mount sources into `files`, env key names into `api`.
+2. **Odoo's own database container was misreported as a standalone system** — the real report listed `1Panel-postgresql-3eaO`, whose data is already covered by the main package's logical `dump.zip` export. Fix: skip a container whose name equals `instance.pgContainer` (`DSV-C12`).
+3. **Image-shipped install trees leaked into `files`** — 13 of the openresty container's 15 mounts are `conf`/`modules`/`root`. Fix: `isInstallTreePath()` filter (`DSV-C9`), applied **only in asset assembly**; the candidate layer still keeps them with `category:'install-tree'` (the user asked for "visible beats clean").
+4. **Image-shipped env keys leaked into `api`** — `PATH`/`LANG`/`PYTHON_VERSION`/`PYTHON_SHA256`/`GPG_KEY` are not "business variables you must reconfigure on restore". Fix: an exact-match `isImageEnvKey()` exclusion (`DSV-C10`); business keys such as `SECRET_KEY`/`EXEC_SCRIPT` stay.
+5. **One duplicate recovery line per asset missing a recovery method** — attendance's recovery section had 10 lines, 9 of which were the same sentence. Fix: deduplicate per asset class (`DSV-C14`).
+
+### New: `attendance` and `1panel-openresty` recovery recipes
+
+- `attendance`: 5 config entries (`requirements.txt` / `requirements-full.txt` / `attendance.service` / the container's `.env` and `run.sh`), 1 data entry (`attendance.db`, explicitly requiring a **SQLite Online Backup API consistent snapshot + `PRAGMA integrity_check`**), 3 recovery entries (source with 15 uncommitted changes that git history cannot replace / `SECRET_KEY.txt` restored from the encrypted package then rotated / container rebuild and acceptance steps).
+- `1panel-openresty`: 2 config entries (`1pwaf/data/sites` and `conf` — the latter holds the `token`/`.secret`/`.aes_key` key files), 2 data entries (stats db and geo), 2 recovery entries (restore sites then restart and verify / re-download geo and compare sha256 against `waf-geo-<TS>.txt`).
+- Recipe lookup gained two fallbacks: the image's first segment (`1panel/openresty:…` → `1panel-openresty`) and **the container name with 1Panel's random suffix stripped** (`1Panel-openresty-OI6y` → `1panel-openresty`). The latter is essential — `DSV-C13` passed only because the image name happened to match, and mutation `M22` surviving exposed that the fallback itself was untested; adding `DSV-C15` killed it.
+
+### Report changes
+
+The dependency graph gained a second group titled `## 独立业务系统（无 Odoo 模块引用，但运行在同一台业务服务器上）` (standalone business systems) with an explainer block answering "what else on this host is not covered". `buildDependencyGraph` now passes `origin` / `standalone` / `image` through `services[]`.
+
+`recovery` fallback: even when all six asset classes are empty, one "unknown, needs manual confirmation" entry is kept — otherwise "not found" in the report reads as "confirmed fine" (`DSV-C8`).
+
+### L2 script updated (`scripts/aux-snapshot.sh`, 6,943 → 18,804 B)
+
+- New `do_snapshot_attendance()`: Python opens the DB via `file:...?mode=ro` and uses the `sqlite3` Online Backup API; if `PRAGMA integrity_check` is not `ok` the snapshot is deleted and the script `die`s. It also records per-table row counts, Python/venv versions, `requirements` contents and `GIT_HEAD`/`GIT_DIRTY`. **`SECRET_KEY.txt` deliberately never enters L2** (L2 is an unencrypted tar.gz); it travels through extraPaths into the encrypted main package.
+- New WAF geo record: `waf-geo-<TS>.txt` captures size/sha256/mtime for the three mmdb files plus recovery instructions; geo itself stays out of the package (27.9 MB, re-downloadable).
+- Real-machine result: snapshot 274,432 B, `integrity_check=ok`, `attendance` table 2,423 rows; all 7 artifacts' sha256 verified; **zero secret-value hits anywhere under `/srv/backups/aux`**.
+
+### Verification
+
+- Full serial run: **925 / 925 pass** (102 test files).
+- Mutation checks: `M18` disable install-tree filter → `DSV-C9` red; `M19` disable env noise filter → `DSV-C10` red; `M20` drop the recovery fallback → `DSV-C8` red; `M21` stop skipping the pg container → `DSV-C12` red; `M22` drop the suffix fallback → `DSV-C15` red; `M23` stop deduplicating recovery → `DSV-C14` red. **All six killed.**
+- toogel real scan (8 extra paths): `covered 20 / suggest 0 / confirm 12 / overflow 0`, `coverage = main 3 / extraPaths 9 / l2 8 / none 12`, `warnings=[]`.
+
+### Lesson
+
+**"Not found" and "confirmed absent" must be different words in the report.** The old implementation treated "no Odoo module references it" as "not important", so systems like attendance stayed invisible to disaster recovery for over a month. Now: when no link can be established, mark `link: unknown` and put it in its own group. Better to add a section saying "these I could not classify" than to let them disappear silently.
+
+---
 ## [0.2.7] — 2026-11-23
 
 **Theme: fix a defect that made v0.2.6 fail with `value is not lossless JSON` the moment it was installed. `scanExternalDeps` itself was fine — its return value carried one `undefined` field.**

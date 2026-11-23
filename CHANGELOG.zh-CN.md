@@ -6,6 +6,53 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.8] — 2026-11-23
+
+**主题：把「独立业务系统」纳入依赖图 —— Discovery 不再只看得见 Odoo 模块依赖的服务。**
+
+### 背景（用户裁决 m05214 第⑤条）
+
+> 「以后 Discovery 不能只寻找 Odoo 模块依赖，还必须识别服务器上独立运行的业务系统。第二种不能因为找不到 Odoo 模块引用就自动忽略。我们不能等到灾难恢复时才发现还有第四个、第五个从未纳入备份的业务系统。」
+
+真机验证时这条要求的必要性被直接证实：`attendance`（`python:3.14.0` 容器，跑一套考勤系统）在这台机器上已经运行了一个多月，**从来没有人把它列入备份范围**。它没有 systemd unit，也不被任何 Odoo 模块引用，旧实现直接把它漏掉了。
+
+### 缺陷与修复（五个，全部由真机输出暴露）
+
+1. **`buildServices()` 收了 `containers` 却写 `void containers;`** —— 只遍历 systemd unit，容器承载的服务整段丢失。修：新增容器装配段，标 `origin:'container'` / `standalone:true` / `link:'unknown'`（不编造模块关联），挂载源进 `files`、env 键名进 `api`。
+2. **Odoo 的数据库容器被误判成独立业务系统** —— 真机报告里冒出 `1Panel-postgresql-3eaO`，但它的数据已由主包 `dump.zip` 的逻辑导出覆盖。修：跳过 `instance.pgContainer` 同名容器（`DSV-C12`）。
+3. **镜像自带安装树进了 `files` 类** —— openresty 容器 15 个挂载里 13 条是 `conf`/`modules`/`root` 这类镜像内容。修：`isInstallTreePath()` 过滤（`DSV-C9`）。注意这是**只在资产装配层过滤**，候选层仍保留并打 `category:'install-tree'`（用户要求「可见比干净更重要」）。
+4. **镜像自带 env 键进了 `api` 类** —— `PATH`/`LANG`/`PYTHON_VERSION`/`PYTHON_SHA256`/`GPG_KEY` 不是「恢复时要配的业务变量」。修：新增 `isImageEnvKey()` 精确白名单排除（`DSV-C10`），业务键 `SECRET_KEY`/`EXEC_SCRIPT` 保留。
+5. **同一类资产缺恢复方式逐条重复** —— attendance 的 recovery 里有 10 条，其中 9 条是同一句话。修：按资产类去重，每类只留一条（`DSV-C14`）。
+
+### 新增：`attendance` 与 `1panel-openresty` 恢复配方
+
+- `attendance`：5 条 config（`requirements.txt` / `requirements-full.txt` / `attendance.service` / 容器 `.env` 与 `run.sh`）、1 条 data（`attendance.db`，明确要求 **SQLite Online Backup API 一致性快照 + `PRAGMA integrity_check`**）、3 条 recovery（源码含 15 处未提交改动不能用 git 历史替代 / `SECRET_KEY.txt` 从加密包取回后轮换 / 容器重建与验收方式）。
+- `1panel-openresty`：2 条 config（`1pwaf/data/sites` 与 `conf`——后者含 `token`/`.secret`/`.aes_key` 三个密钥件）、2 条 data（统计库 db 与 geo）、2 条 recovery（sites 恢复后重启验证 / geo 重新下载后与 `waf-geo-<TS>.txt` 的 sha256 比对）。
+- 配方查找加两条回退：镜像名首段（`1panel/openresty:…` → `1panel-openresty`）与**容器名去 1Panel 随机后缀**（`1Panel-openresty-OI6y` → `1panel-openresty`）。后者是必需的——`DSV-C13` 靠镜像名恰好命中，`M22` 变异存活暴露了这条路径没被锁住，补 `DSV-C15` 才杀掉。
+
+### 报告变化
+
+依赖图新增第二组，标题 `## 独立业务系统（无 Odoo 模块引用，但运行在同一台业务服务器上）`，并附说明块回答「这台机器上还有哪些业务系统没有纳入灾备」。`buildDependencyGraph` 的 `services[]` 透传 `origin` / `standalone` / `image`。
+
+`recovery` 类兜底：即使六类资产全空也留一条「未知（需人工确认）」，否则报告里的「未发现」会被读成「已确认没问题」（`DSV-C8`）。
+
+### L2 脚本同步（`scripts/aux-snapshot.sh`，6,943 → 18,804 B）
+
+- 新增 `do_snapshot_attendance()`：Python 走 `file:...?mode=ro` + `sqlite3` Online Backup API 生成快照，`PRAGMA integrity_check` 不是 `ok` 就删掉并 `die`；同时记录逐表行数、Python/venv 版本、`requirements` 内容、`GIT_HEAD`/`GIT_DIRTY`。**`SECRET_KEY.txt` 刻意不进 L2**（L2 是未加密 tar.gz），它随 extraPaths → 加密主备份走。
+- 新增 WAF geo 记录：`waf-geo-<TS>.txt` 记三个 mmdb 的 size/sha256/mtime 与恢复方式，geo 本身不进包（27.9 MB 可重下）。
+- 真机实测：快照 274,432 B、`integrity_check=ok`、`attendance` 表 2,423 行；7 个产物 sha256 全过；**密钥值在 `/srv/backups/aux` 全目录命中 0**。
+
+### 验证
+
+- 全量串行 **925 / 925 pass**（102 个测试文件）。
+- 变异验证：`M18` 关掉安装树过滤 → `DSV-C9` 红；`M19` 关掉 env 降噪 → `DSV-C10` 红；`M20` 删掉 recovery 兜底 → `DSV-C8` 红；`M21` 不跳 pg 容器 → `DSV-C12` 红；`M22` 去掉后缀回退 → `DSV-C15` 红；`M23` recovery 不去重 → `DSV-C14` 红。**六项全杀。**
+- toogel 真机扫描（8 条 extraPaths）：`covered 20 / suggest 0 / confirm 12 / overflow 0`，`coverage = main 3 / extraPaths 9 / l2 8 / none 12`，`warnings=[]`。
+
+### 教训
+
+**「没找到」和「确认不存在」在报告里必须是两种不同的字。** 旧实现把「没有 Odoo 模块引用」当成「不重要」，于是 attendance 这类系统在整整一个多月里对灾备体系隐形。这次改成：认不出关联就标 `link: unknown` 并单独成组，宁可让报告多一节「这些我认不出来」，也不能让它们静默消失。
+
+---
 ## [0.2.7] — 2026-11-23
 
 **主题：修掉 v0.2.6 一装上就报 `value is not lossless JSON` 的缺陷。`scanExternalDeps` 本身没问题，是返回值里带了一个 `undefined` 字段。**

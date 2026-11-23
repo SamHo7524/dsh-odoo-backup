@@ -62,6 +62,125 @@ do_prepare_secret() {
     "$(stat -c '%a' "$SECRET_OUT")"
 }
 
+# --------------------------------------------------------------- attendance 快照
+# 2026-11-23 用户裁决：/root/attendance-system 纳入完整灾备，但
+#   「attendance.db 正在写入，不能直接把正在使用的 SQLite 文件当普通静态文件复制」
+#   「建议使用 SQLite Online Backup API……备份完成后检查数据库完整性 PRAGMA integrity_check; 结果必须为 ok」
+#   「先做一致性快照，再把快照纳入 L2 包」
+# 因此：extraPaths 里显式排除了 attendance.db/-shm/-wal（tar 直接复制活动库会拿到不一致页），
+# 一致性快照由本函数产出，随 L2 包一起保管。
+#
+# 注意（安全）：SECRET_KEY.txt **不** 进 L2（L2 包是未加密的 tar.gz）；它随
+# extraPaths→主备份→AES-256-GCM 加密包走。本函数只处理数据库。
+#
+# 依赖：python3（无 sqlite3 CLI 也可用；源库以 mode=ro 打开，绝不写源）
+do_snapshot_attendance() {
+  local SRC_DIR="/root/attendance-system"
+  local SRC_DB="$SRC_DIR/attendance.db"
+  local TMP_DB="$OUT/.attendance-snap-$TS.db"
+  local META="$OUT/attendance-meta-$TS.txt"
+
+  if [ ! -f "$SRC_DB" ]; then
+    printf '%s\n' "$SRC_DB" >> "$MISS"
+    log "MISSING: $SRC_DB（跳过一致性快照）"
+    return 0
+  fi
+  command -v python3 >/dev/null 2>&1 || die "缺少 python3，无法做 SQLite 一致性快照"
+
+  # 1) Online Backup API 一致性快照 + integrity_check
+  local vout
+  vout="$(python3 - "$SRC_DB" "$TMP_DB" <<'PY'
+import sqlite3, sys, json
+src_path, dst_path = sys.argv[1], sys.argv[2]
+out = {}
+src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+try:
+    out["src_journal_mode"] = src.execute("PRAGMA journal_mode").fetchone()[0]
+    dst = sqlite3.connect(dst_path)
+    try:
+        src.backup(dst)          # 在线备份，WAL 下也包含未 checkpoint 的数据
+    finally:
+        dst.close()
+finally:
+    src.close()
+
+chk = sqlite3.connect(f"file:{dst_path}?mode=ro", uri=True)
+try:
+    out["integrity_check"] = chk.execute("PRAGMA integrity_check").fetchone()[0]
+    tables = [r[0] for r in chk.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+    counts = {}
+    for t in tables:
+        try:
+            counts[t] = chk.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+        except Exception as e:
+            counts[t] = f"ERR:{type(e).__name__}"
+    out["tables"] = tables
+    out["counts"] = counts
+finally:
+    chk.close()
+print(json.dumps(out, ensure_ascii=False))
+PY
+)" || die "attendance 一致性快照失败"
+
+  local ok
+  ok="$(printf '%s' "$vout" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("integrity_check",""))' 2>/dev/null)"
+  if [ "$ok" != "ok" ]; then
+    log "integrity_check 未通过：${ok:-<空>}"
+    rm -f "$TMP_DB"
+    die "attendance.db 一致性校验失败，拒绝出包"
+  fi
+
+  # 2) 记录元信息（Python 版本 / 依赖版本 / 表行数）——用户要求「记录 Python 版本和依赖版本」
+  {
+    printf '# attendance 快照元信息  ts=%s\n' "$TS"
+    printf 'SOURCE_DB\t%s\n' "$SRC_DB"
+    printf 'SOURCE_BYTES\t%s\n' "$(stat -c '%s' "$SRC_DB")"
+    printf 'SNAPSHOT\t%s\n' "$vout"
+    local pyv reqf
+    pyv="$(python3 --version 2>&1)"
+    printf 'PYTHON_%s\n' "$pyv"
+    if [ -f "$SRC_DIR/venv/pyvenv.cfg" ]; then
+      printf 'VENV_PYVENV_CFG\t%s\n' "$(tr '\n' ';' < "$SRC_DIR/venv/pyvenv.cfg")"
+    fi
+    for reqf in requirements.txt requirements-full.txt; do
+      if [ -f "$SRC_DIR/$reqf" ]; then
+        printf 'REQ\t%s\t%s\n' "$reqf" "$(tr '\n' ';' < "$SRC_DIR/$reqf")"
+      else
+        printf 'REQ\t%s\tMISSING\n' "$reqf"
+      fi
+    done
+    if [ -d "$SRC_DIR/.git" ]; then
+      printf 'GIT_HEAD\t%s\n' "$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo UNAVAILABLE)"
+      printf 'GIT_DIRTY\t%s\n' "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null | wc -l)"
+    fi
+  } > "$META"
+  sha256sum "$META" | awk '{print $1}' > "$META.sha256"
+
+  # 3) 快照打成独立包（不加密的 L2 层；密钥不在其中）
+  mv -f "$TMP_DB" "$OUT/attendance-snapshot-$TS.db"
+  local SNAP="$OUT/attendance-snapshot-$TS.db"
+  local P4="$OUT/attendance-db-$TS.tar.gz"
+  tar -C "$OUT" --numeric-owner -czf "$P4" "attendance-snapshot-$TS.db" 2>"$OUT/.tarerr4.$TS"
+  local rc4=$?
+  if [ $rc4 -ne 0 ]; then
+    log "tar(attendance) rc=$rc4"
+    tail -c 500 "$OUT/.tarerr4.$TS"
+    die "attendance 快照打包失败"
+  fi
+  sha256sum "$P4" | awk '{print $1}' > "$P4.sha256"
+  local FL4="$OUT/attendance-db-$TS.filelist.txt"
+  tar -tzf "$P4" > "$FL4" 2>/dev/null || log "WARN: 无法生成 $FL4"
+  sha256sum "$FL4" | awk '{print $1}' > "$FL4.sha256"
+
+  # 未压缩快照本身也保留（便于直接核对），并记录 sha
+  sha256sum "$SNAP" | awk '{print $1}' > "$SNAP.sha256"
+
+  ATTN_P4="$P4"; ATTN_SNAP="$SNAP"; ATTN_META="$META"; ATTN_FL="$FL4"
+  ATTN_SUM="$vout"
+  log "ATTENDANCE_OK snapshot=$(basename "$SNAP")( $(stat -c '%s' "$SNAP")B ) pkg=$(basename "$P4")( $(stat -c '%s' "$P4")B ) integrity=ok"
+}
+
 # ---------------------------------------------------------------------- snapshot
 do_snapshot() {
   mkdir -p "$OUT" || die "无法创建 $OUT"
@@ -178,6 +297,45 @@ do_snapshot() {
   fi
   sha256sum "$SW" | awk '{print $1}' > "$SW.sha256"
 
+  # --- 包 4：attendance 一致性快照（2026-11-23 用户裁决：活动 SQLite 不能 tar 直拷）
+  ATTN_P4=""; ATTN_SNAP=""; ATTN_META=""; ATTN_FL=""; ATTN_SUM=""
+  do_snapshot_attendance
+
+  # --- WAF geo 记录（2026-11-23 用户裁决：geo 不进常规包，但必须记录来源/版本/校验/恢复验证）
+  local GEO="$OUT/waf-geo-$TS.txt"
+  {
+    printf '# WAF geo 数据记录  ts=%s\n' "$TS"
+    printf '# 用户裁决：geo 约 27.9 MB 可重新下载，不进入常规备份包；但必须记录版本与恢复方式。\n'
+    local GEO_DIR="/opt/1panel/apps/openresty/openresty/1pwaf/data/geo"
+    if [ -d "$GEO_DIR" ]; then
+      local g
+      for g in "$GEO_DIR"/*; do
+        [ -f "$g" ] || continue
+        printf 'GEO_FILE\t%s\t%s\t%s\n' \
+          "$(basename "$g")" "$(stat -c '%s' "$g")" "$(sha256sum "$g" | awk '{print $1}')"
+        # mmdb 内嵌构建时间（只读 strings 抓 build_epoch 线索，失败则跳过）
+        printf 'GEO_FILE_MTIME\t%s\t%s\n' "$(basename "$g")" "$(date -r "$g" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || echo UNAVAILABLE)"
+      done
+      printf 'GEO_DIR_BYTES\t%s\n' "$(du -sb "$GEO_DIR" 2>/dev/null | awk '{print $1}')"
+    else
+      printf 'GEO_DIR\tMISSING\t%s\n' "$GEO_DIR"
+    fi
+    # 自建站点配置（才是真正要备份的 WAF 自定义资产）
+    local SITES="/opt/1panel/apps/openresty/openresty/1pwaf/data/sites"
+    if [ -d "$SITES" ]; then
+      printf 'SITES_BYTES\t%s\n' "$(du -sb "$SITES" 2>/dev/null | awk '{print $1}')"
+      printf 'SITES_FILES\t%s\n' "$(find "$SITES" -type f | wc -l)"
+      printf 'SITES_SHA\t%s\n' "$(cd "$SITES" && find . -type f -print0 | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | awk '{print $1}')"
+    else
+      printf 'SITES\tMISSING\t%s\n' "$SITES"
+    fi
+    printf 'RECOVER_HOW\t从官方渠道重新下载 GeoIP/BlackIP/SpiderIP mmdb，按上面 GEO_FILE 的 sha256 校验后再启动 openresty\n'
+    printf 'RECOVER_VERIFY\t重启 openresty 后确认 1pwaf 加载 geo 无报错，并在面板/日志检查 WAF 正常拦截\n'
+    printf 'CONF_SENSITIVE\tconf/{token,.secret,.aes_key} 属密钥类，已随 extraPaths→主备份加密包，不在本未加密 L2 包内\n'
+  } > "$GEO"
+  sha256sum "$GEO" | awk '{print $1}' > "$GEO.sha256"
+  log "WAF_GEO：已记录 $(basename "$GEO")（geo 本身不进包）"
+
   # --- MANIFEST（纯文本，逐行：类型<TAB>字节<TAB>sha256<TAB>路径）
   local MAN="$OUT/aux-$TS.manifest.txt"
   {
@@ -191,6 +349,18 @@ do_snapshot() {
       "$(stat -c '%s' "$P3")" "$(cat "$P3.sha256")" "${P3#/}"
     printf 'ARTIFACT\t%s\t%s\t%s\n' \
       "$(stat -c '%s' "$FL")" "$(cat "$FL.sha256")" "${FL#/}"
+    printf 'ARTIFACT\t%s\t%s\t%s\n' \
+      "$(stat -c '%s' "$GEO")" "$(cat "$GEO.sha256")" "${GEO#/}"
+    if [ -n "${ATTN_P4:-}" ]; then
+      printf 'ARCHIVE\t%s\t%s\t%s\n' \
+        "$(stat -c '%s' "$ATTN_P4")" "$(cat "$ATTN_P4.sha256")" "${ATTN_P4#/}"
+      printf 'ARTIFACT\t%s\t%s\t%s\n' \
+        "$(stat -c '%s' "$ATTN_META")" "$(cat "$ATTN_META.sha256")" "${ATTN_META#/}"
+      printf 'ARTIFACT\t%s\t%s\t%s\n' \
+        "$(stat -c '%s' "$ATTN_FL")" "$(cat "$ATTN_FL.sha256")" "${ATTN_FL#/}"
+      printf 'ATTENDANCE\t%s\t%s\t%s\t%s\n' \
+        "$(stat -c '%s' "$ATTN_SNAP")" "$(cat "$ATTN_SNAP.sha256")" "${ATTN_SNAP#/}" "$ATTN_SUM"
+    fi
     # 明文口令预警：SECRETWARN<TAB>0<TAB>行号列表<TAB>文件路径
     while IFS=$'\t' read -r sp sl; do
       [ -n "${sp:-}" ] || continue
@@ -215,16 +385,29 @@ do_snapshot() {
   ls -1t "$OUT"/aux-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
   ls -1t "$OUT"/kb-scripts-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
   ls -1t "$OUT"/ops-scripts-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+  ls -1t "$OUT"/attendance-db-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+  ls -1t "$OUT"/attendance-snapshot-*.db 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+  ls -1t "$OUT"/attendance-meta-*.txt 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+  ls -1t "$OUT"/waf-geo-*.txt 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
   ls -1t "$OUT"/aux-*.manifest.txt 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
 
   rm -f "$OUT"/.tarerr*."$TS"
   # 保留 LIST/SIZES 供审计（小文件），MISS 转为永久记录
   cp -f "$MISS" "$OUT/aux-$TS.missing.txt" 2>/dev/null || true
 
-  printf 'SNAPSHOT_OK ts=%s aux=%s(%sB) kbs=%s(%sB) ops=%s(%sB) files=%s missing=%s secretwarn=%s\n' \
+  local attn_name attn_size
+  if [ -n "${ATTN_P4:-}" ]; then
+    attn_name="$(basename "$ATTN_P4")"
+    attn_size="$(stat -c '%s' "$ATTN_P4")"
+  else
+    attn_name="none"
+    attn_size=0
+  fi
+  printf 'SNAPSHOT_OK ts=%s aux=%s(%sB) kbs=%s(%sB) ops=%s(%sB) attn=%s(%sB) files=%s missing=%s secretwarn=%s\n' \
     "$TS" "$(basename "$P1")" "$(stat -c '%s' "$P1")" \
     "$(basename "$P2")" "$(stat -c '%s' "$P2")" \
     "$(basename "$P3")" "$(stat -c '%s' "$P3")" \
+    "$attn_name" "$attn_size" \
     "$nlist" "$(wc -l < "$MISS")" "$nsw"
 
   local nmiss
