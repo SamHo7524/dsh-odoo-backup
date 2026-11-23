@@ -6,6 +6,58 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.7] — 2026-11-23
+
+**Theme: fix a defect that made v0.2.6 fail with `value is not lossless JSON` the moment it was installed. `scanExternalDeps` itself was fine — its return value carried one `undefined` field.**
+
+### The defect
+
+After v0.2.6 was released and installed into the profile, the very first real call
+
+```
+odoo_backup action=scanExternalDeps server=toogel
+```
+
+failed outright:
+
+```
+Error: tool "odoo_backup" returned invalid output: value is not lossless JSON
+```
+
+### Root cause
+
+In `tierCandidates()` (`lib/discovery/scan.js`), `category` was taken from `deriveCategory(path)`, which returns **`undefined` for the vast majority of paths**:
+
+```js
+const category = c.category ?? deriveCategory(c.path);
+...
+base = { path, sources, confidence, coverage, coverageReason, recoveryRisk, absorbed, category };
+```
+
+`JSON.stringify` **drops any own property whose value is `undefined`**. So the structured object DSH received had 8 fields, while the serialized-then-parsed copy had 7 — judged not round-trippable, and the tool call was rejected.
+
+**Why 900+ passing unit tests missed it**: not a single test ever did a JSON round-trip on a tool return value (`JSON.parse(JSON.stringify(res))` compared against the original). They all asserted *field contents*, never *whether the object survives DSH's serialization check*.
+
+### Fix
+
+1. `lib/discovery/scan.js`: `category,` → **`category: category ?? null,`**. It must be `null`, not `undefined` — the key has to exist and be serializable so the shape matches before and after serialization.
+2. New `test/discovery-lossless.test.js` (LOSS-1~LOSS-3) that lifts DSH's actual check into the suite:
+   - **LOSS-1**: the full scan result, `JSON.parse(JSON.stringify(res))`, must `deepEqual` the original;
+   - **LOSS-2**: every item in the four buckets (covered/suggest/confirm/overflow) must round-trip identically, and `'category' in item` must be true with `item.category !== undefined`;
+   - **LOSS-3**: `report` must be a string with no `undefined` in its body, and `discoveryWarnings` must round-trip.
+   - The tests inject a fake `discoverInstance` and a fake `exec`, so no remote connection is made (the first version did not inject them and took 5.5 s per case).
+3. Mutation check: reverting `category: category ?? null,` to `category,` turns **both LOSS-1 and LOSS-2 red**; restoring it returns 3/3 green. LOSS-3 stays green under the mutation (report rendering uses `if (it.category)`, so it never prints `undefined`) — which is precisely why asserting on report text alone is not enough; the data structure itself has to be asserted.
+
+### Verification
+
+Full serial run: `910 / 910 pass` (100 test files).
+
+### Lesson
+
+**"Does the tool return value survive a JSON round-trip?" has to be its own assertion, not something you eyeball in a rendered report.** This is the third incident of the same family in this task: v0.2.2 had a plugin entry that was never imported, v0.2.3 had a `return` statement that was never executed, and v0.2.6 had a return value that was never serialized. In all three cases the tests ran the function but never reached the step that actually broke.
+
+---
+
 ## [0.2.6] — 2026-11-23
 
 **Theme: external-dependency discovery Phase 1 (`scanExternalDeps`, read-only), plus closing a packaging gap in the release gate.**
@@ -39,7 +91,7 @@ Scans a server's external dependencies and reconciles them against the backup co
 
 ### Verification
 
-- Full serial suite: **907 / 907 pass** (99 test files; v0.2.5 was 759).
+- Full serial suite: **910 / 910 pass** (99 test files; v0.2.5 was 759).
 - The 10 discovery test files total **144 cases**: paths(25) / coverage(12) / graph(12) / collectors(24) / scan(21) / services(13) / index(5) / noise(24) / l2-scope(3) / tool(5).
 - **Mutation testing: 12/12 killed** — silent overflow drop, missing reason, static literals leaking into suggestions, no degradation on probe failure, suggesting non-existent paths, no single-file degradation, no db-physical degradation, no install-tree degradation, broken system-area detection, broken host-conf detection, broken nondata detection, guessing `isDir` when unknown, and skipped de-duplication of ignored entries.
   - **2 of them survived the first round**, both because the assertion was too loose: `>= N` instead of an exact set, and checking only the bucket instead of the reason (that path fell through to the "unreadable" branch — same bucket, different reason). Tightened to exact sets plus per-item reason text.

@@ -6,6 +6,52 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.7] — 2026-11-23
+
+**主题：修掉 v0.2.6 一装上就报 `value is not lossless JSON` 的缺陷。`scanExternalDeps` 本身没问题，是返回值里带了一个 `undefined` 字段。**
+
+### 缺陷
+
+v0.2.6 发布、装进 profile 后，第一次真机调用 `odoo_backup action=scanExternalDeps server=toogel` 直接失败：
+
+```
+Error: tool "odoo_backup" returned invalid output: value is not lossless JSON
+```
+
+### 根因
+
+`lib/discovery/scan.js` 的 `tierCandidates()` 里，`category` 取的是 `deriveCategory(path)` 的返回值，而它在**绝大多数路径上返回 `undefined`**：
+
+```js
+const category = c.category ?? deriveCategory(c.path);
+...
+base = { path, sources, confidence, coverage, coverageReason, recoveryRisk, absorbed, category };
+```
+
+`JSON.stringify` 会把值为 `undefined` 的**自有字段整个丢掉**。于是 DSH 拿到的「结构化对象」有 8 个字段、序列化后再解析只有 7 个 —— 判定为不可无损往返，直接拒绝这次工具调用。
+
+**为什么单元测试全绿也没抓到**：900 多个测试里没有一个对工具返回值做过一次 JSON 往返（`JSON.parse(JSON.stringify(res))` 与原值比对）。测的都是「字段内容对不对」，没人测「这个对象能不能过 DSH 的序列化检查」。
+
+### 修复
+
+1. `lib/discovery/scan.js`：`category,` → **`category: category ?? null,`**。必须是 `null` 而不是 `undefined`——字段存在且可序列化，前后形状才一致。
+2. 新增 `test/discovery-lossless.test.js`（LOSS-1~LOSS-3），直接把 DSH 实际执行的那项检查搬进测试：
+   - **LOSS-1**：整个扫描结果 `JSON.parse(JSON.stringify(res))` 必须与原值 `deepEqual`；
+   - **LOSS-2**：四档（covered/suggest/confirm/overflow）每一项都要往返恒等，且 `'category' in item` 为真、`item.category !== undefined`；
+   - **LOSS-3**：`report` 必须是字符串、正文不含 `undefined` 字样，`discoveryWarnings` 可往返。
+   - 测试注入假 `discoverInstance` 与假 `exec`，不连远端（首版没注入，5.5 s/例）。
+3. 变异验证：把 `category: category ?? null,` 改回 `category,` → **LOSS-1 与 LOSS-2 双双变红**，还原后 3/3 绿。LOSS-3 在变异下仍绿（报告渲染用 `if (it.category)`，本来就不打印 undefined）——这说明「只看报告文本」不足以发现问题，必须断言数据结构本身。
+
+### 验证
+
+全量串行 `910 / 910 pass`（100 个测试文件）。
+
+### 教训
+
+**「工具返回值的 JSON 往返」必须作为独立断言，而不是靠肉眼看报告。** 这是本任务第三次同类事故：v0.2.2 是插件入口从未被 import、v0.2.3 是 `return` 语句从未被执行、v0.2.6 是返回值从未被序列化。三次都是「测试执行了函数，但没执行到真正出问题的那一步」。
+
+---
+
 ## [0.2.6] — 2026-11-23
 
 **主题：外部依赖发现 Phase 1（`scanExternalDeps`，只读）+ 补掉一个「打包漏文件」的发版门禁缺口。**
@@ -39,7 +85,7 @@
 
 ### 验证
 
-- 全量串行：**907 / 907 通过**（99 个测试文件；v0.2.5 为 759）。
+- 全量串行：**910 / 910 通过**（99 个测试文件；v0.2.5 为 759）。
 - discovery 相关 10 个测试文件合计 **144 例**：paths(25) / coverage(12) / graph(12) / collectors(24) / scan(21) / services(13) / index(5) / noise(24) / l2-scope(3) / tool(5)。
 - **变异验证 12 项全杀**：溢出静默丢弃、不写理由、静态线索进建议、探针失败不降级、不存在路径仍建议、单文件不降级、db-physical 不降级、install-tree 不降级、系统发布件判定失效、宿主机 conf 判定失效、nondata 判定失效、`isDir` 未知位猜成 true、忽略项不去重。
   - 其中 **2 项首轮存活**，都因断言太松：`>= N` 而非精确集合；只看档次不看理由（那条路径顺落到「不可读」分支，档次没变、只有理由变了）。已加严为精确集合 + 逐条验理由文本。
