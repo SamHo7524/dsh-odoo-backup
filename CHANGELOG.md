@@ -6,6 +6,55 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.3.0] — 2026-11-24
+
+**Theme: a real full-restore drill on a scratch host found four restore-path failures that every unit test had been happy to call green. All four are fixed here, and each fix is locked by mutation-verified tests.**
+
+### Background (user hard constraint m06530)
+
+The drill ran **only** on the test host `odoo.toogel.cn` (134.175.51.9); the production host was **read-only throughout**, verified afterwards: `tg-odoo` still 169 installed modules / 68 partners / 37 orders, zero `%restore%` or `%-old-%` databases, filestore byte-identical, container start time unchanged, site 200.
+
+The drill restored over the existing `toogel` database and covered the full business state: dump + addons + pydeps + `odoo.conf` + 8 `extraPaths` + the encrypted single files. Core data came back correct on the first attempt — 169 installed modules, `res_partner 68 / product_template 20 / sale_order 37 / blog_post 7`, attachments `DB_REFS=1747 / FS_FILES=1941 / MISSING=0`, `filestore` byte-for-byte equal to the manifest. The failures were all in the **finishing steps**, i.e. exactly the steps that decide whether the site actually runs afterwards.
+
+### Fixed
+
+- **`odoo.conf` is now actually restored** (`lib/restore.js`: `buildConfRestoreScript` / `parseConfRestore` / `phaseRestoreConf`, new stage A0c).
+  - The backup side had captured `conf.present=false` on the live host for a whole release cycle because it looked at two hard-coded paths, while the real file was at `/opt/1panel/apps/odoo/odoo19/data/conf/odoo.conf` (`odoo19`, not `odoo`).
+  - Restore previously had **no** odoo.conf handling at all — `extractBundle` only picked `dump.zip` / `addons-*` / `pydeps-*`. A restored site therefore came up with the target host's own tuning instead of the backed-up tuning.
+  - Stage A0c runs **before** the safety backup, because `workers` / `limit_memory_soft` / `proxy_mode` decide whether the newly loaded database can run stably.
+- **`dbname`-filter write-back now targets the real file on the host** (`lib/restore.js`: `buildResolveConfHostPathScript` / `parseConfHostPath`).
+  - Root cause: `sed -i` **cannot** rewrite a single-file bind mount. Measured on the live host: `sed: cannot rename /tmp/bmtest/dst/sed6Lj7rI: Device or resource busy`, exit 4. The mount is also `rw=false` and shows up as `ro` in `/proc/mounts`, so no write from inside the container could ever succeed.
+  - The old code wrote to the writable-but-unread `/etc/odoo/odoo.conf` and then read the value back from that same file, reporting `applied: true`. **The check could not fail.** It has been failing silently since it was written.
+  - The new code resolves the container path to its host mount source via `docker inspect`, edits the host file, **restarts Odoo** (`odoo/cli/server.py:97` parses config once at startup — the previous comment claiming "dbfilter takes effect per request, no restart needed" was wrong), then reads back **from inside the container**.
+  - Best-effort by design: if the host path cannot be resolved the switch still proceeds (data is already restored) and the failure is reported instead of pretending success.
+- **`odoo.conf` path discovery follows `$ODOO_RC`** (`lib/discover.js`: `resolveConfPath`, four-tier candidate search in `lib/backup.js`: `buildConfCandidateShell`).
+  - Discovery hard-coded `/etc/odoo/odoo.conf` while the container ran `ODOO_RC=/etc/odoo/odoo-hardening.conf`. Because the hard-coded file also existed, probing did not error — the defect stayed hidden and produced false-positive `dbfilter` read-backs.
+- **V3 "runtime dependencies importable" no longer false-positives on unit tests** (`lib/imports.js`).
+  - The scanner imported every `*.py` under addons, including `tests/`. In `tugou_currency_ecb_sync/tests/test_ecb_rate_logic.py:17` the module does `from ecb_rate_logic import (...)` after inserting `../models` into `sys.path` — a legitimate sibling import inside a unit test, not a third-party dependency.
+  - The same file and line exist on the production host, so **this would have blocked a production disaster recovery too**.
+  - The scan now emits `IMP\t<rel>\t<import>` records, resolves sibling names **per module**, and skips `tests/` / `test/` segments when computing runtime imports.
+- **`admin_passwd` must never be written as `<REDACTED>`** (defence in depth in `buildConfRestoreScript`).
+  - The upload side already strips the placeholder, but a sandbox run proved the remote script would happily write `admin_passwd = <REDACTED>` into the live config on its own — silently downgrading the admin password to a publicly known value.
+  - Both write paths (overwrite and create) now filter again remotely, and `grep -v`'s "everything filtered" exit code 1 is treated as success rather than failure.
+
+### Changed
+
+- `web-stack` exclude `*/log` → **`*/log/*`**. The previous pattern removed the `log` **directory**, and nginx refuses to start without it: `[emerg] open() "/www/sites/kq.toogel.cn/log/access.log" failed (2: No such file or directory)` → `openresty -t` failed outright. Creating the two directories alone (with no log files at all) restores `syntax is ok` / `test is successful`. Member counts on the live host: no exclude 27, `*/log` 24 (0 log members), `*/log/*` 25 (1 — the directory itself).
+- Profile `extraFiles` grows to 3: `/root/.hermes/profiles/cs-main/.env` joined the two attendance files.
+  - `webchat.service` uses `EnvironmentFile=/root/.hermes/profiles/cs-main/.env`; without it the service fails to start (`start_rc=1`, `activating (auto-restart)`).
+  - `GATEWAY_ALLOW_ALL_USERS` exists **only** in that profile `.env`. It has no other source anywhere on the host.
+  - The two `.env` files are **complementary, not redundant**: `QQ_APP_ID` and `QQ_CLIENT_SECRET` hold *different* values in each, so "let home overwrite profile" would break one of them.
+
+### Verification
+
+- 1063 / 1063 unit tests pass (`node --test --test-concurrency=1`, 110 files, 98 s).
+- **Mutation testing 21/21 KILLED** across the four fixes: conf restore 13, dbfilter write-back 8. Three initially survived and each exposed a genuinely weak assertion — `M43` (write without restart) was masked by an earlier `docker start` in the script; `M44` (not resolving the mount source) was satisfied by merely *containing* the strings `docker inspect` / `Destination`; `M47` (`rc=97` → `0`) turned a missing host path into a reported success.
+- Live sandbox on the test host, three scenarios: overwrite existing conf → 0 `<REDACTED>` lines, exactly 1 `admin_passwd` line, real value preserved last, backup copy created; create-from-scratch → 0 `<REDACTED>`; no host path → `CONF_RC=97` with nothing written.
+
+### Lesson
+
+**"The code ran" and "the code worked" produce identical output when nobody reads the value back from the place the application actually reads it.** The `dbfilter` write-back reported `applied: true` for months by reading a file the application never opens. The drill only caught it because we verified from inside the container.
+
 ## [0.2.9] — 2026-11-24
 
 **Theme: narrow the disaster-recovery boundary from "the whole server" to "business state" — adds a four-way disposition classification and an encrypted channel for scattered critical single files.**

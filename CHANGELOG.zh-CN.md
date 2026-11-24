@@ -6,6 +6,55 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.3.0] — 2026-11-24
+
+**主题：在临时主机上做了一次真恢复演练，发现四处「单元测试全绿、真恢复起不来」的恢复链缺陷。四处均已修复，每处都由变异验证过的测试锁住。**
+
+### 背景（用户硬约束 m06530）
+
+演练**只在测试主机** `odoo.toogel.cn`（134.175.51.9）进行；生产主机**全程只读**，事后逐项核对：`tg-odoo` 仍 169 个已装模块 / 68 个往来单位 / 37 张销售单、`%restore%` 与 `%-old-%` 库计数为 0、filestore 字节数不变、容器启动时间未变、站点 200。
+
+演练覆盖测试机现有 `toogel` 库，恢复范围为完整业务状态：dump + addons + pydeps + `odoo.conf` + 8 条 `extraPaths` + 加密单文件。核心数据第一次就恢复正确——169 个模块、`res_partner 68 / product_template 20 / sale_order 37 / blog_post 7`、附件 `DB_REFS=1747 / FS_FILES=1941 / MISSING=0`、`filestore` 字节数与清单完全一致。失败全部发生在**收尾步骤**，而收尾步骤恰恰决定「恢复完到底能不能跑」。
+
+### 修复
+
+- **`odoo.conf` 现在真的会被恢复**（`lib/restore.js`：`buildConfRestoreScript` / `parseConfRestore` / `phaseRestoreConf`，新增阶段 A0c）。
+  - 备份侧整整一个版本周期都记着 `conf.present=false`：它只看两个硬编码路径，而真文件在 `/opt/1panel/apps/odoo/odoo19/data/conf/odoo.conf`（是 `odoo19`，不是 `odoo`）。
+  - 恢复侧**完全没有** odoo.conf 处理——`extractBundle` 只挑 `dump.zip` / `addons-*` / `pydeps-*`。于是恢复出来的站点用的是目标机自己的调参，而不是备份时的调参。
+  - 阶段 A0c 排在安全备份**之前**：`workers` / `limit_memory_soft` / `proxy_mode` 决定新导入的库能不能稳跑。
+- **`dbfilter` 回写改为写宿主机真文件**（`lib/restore.js`：`buildResolveConfHostPathScript` / `parseConfHostPath`）。
+  - 根因：`sed -i` **无法**改写单文件 bind mount。真机实测 `sed: cannot rename /tmp/bmtest/dst/sed6Lj7rI: Device or resource busy`，退出码 4；该挂载本身 `rw=false`，容器内 `/proc/mounts` 显示 `ro`，容器内任何写入都不可能成功。
+  - 旧代码写的是可写但**没人读**的 `/etc/odoo/odoo.conf`，然后再从同一个文件读回，报 `applied: true`。**这个检查永远不会失败。** 从写下的那天起就一直在静默失败。
+  - 新代码用 `docker inspect` 把容器内路径解析成宿主机挂载源、改宿主机文件、**重启 Odoo**（`odoo/cli/server.py:97` 启动时只解析一次配置——旧注释「dbfilter 是请求期生效的配置，无需再次重启」是错的），最后**从容器内**回读。
+  - 刻意做成尽力而为：解析不到宿主机路径时仍继续切换（数据已恢复），但把失败如实上报，而不是假装成功。
+- **`odoo.conf` 路径发现跟随 `$ODOO_RC`**（`lib/discover.js`：`resolveConfPath`；`lib/backup.js`：`buildConfCandidateShell` 四级候选查找）。
+  - Discovery 硬编码 `/etc/odoo/odoo.conf`，而容器实际跑的是 `ODOO_RC=/etc/odoo/odoo-hardening.conf`。因为那个硬编码文件恰好也存在，探测不报错——缺陷被藏了起来，还制造出 `dbfilter` 回读的假阳性。
+- **V3「运行时依赖可导入」不再被单元测试误报**（`lib/imports.js`）。
+  - 扫描器把 addons 下**所有** `*.py` 的 import 都算进去了，包括 `tests/`。`tugou_currency_ecb_sync/tests/test_ecb_rate_logic.py:17` 在把 `../models` 插进 `sys.path` 之后做 `from ecb_rate_logic import (...)`——这是单元测试内部的兄弟模块导入，不是第三方依赖。
+  - 生产主机上存在完全相同的文件与同一行，**所以这条同样会拦住生产灾备恢复**。
+  - 现在扫描输出 `IMP\t<rel>\t<import>` 记录，**按模块**解析兄弟名，并在计算运行时依赖时跳过 `tests/` / `test/` 段。
+- **`admin_passwd` 绝不能写成 `<REDACTED>`**（`buildConfRestoreScript` 里的纵深防御）。
+  - 上传侧本来就会剔除占位符，但沙箱实测证明远端脚本自己也会把 `admin_passwd = <REDACTED>` 写进真配置——等于把管理员口令静默降级成一个公开已知的值。
+  - 覆盖与新建两条写入路径现在都在远端再过滤一次，并把 `grep -v` 的「全部被过滤」退出码 1 视为成功而不是失败。
+
+### 变更
+
+- `web-stack` 排除规则 `*/log` → **`*/log/*`**。原规则删掉的是 `log` **目录本身**，而 nginx 没有它会拒绝启动：`[emerg] open() "/www/sites/kq.toogel.cn/log/access.log" failed (2: No such file or directory)` → `openresty -t` 直接失败。只建出那两个目录（一个日志文件都不补）就恢复到 `syntax is ok` / `test is successful`。真机成员数对照：不排 27、`*/log` 24（log 成员 0）、`*/log/*` 25（log 成员 1，即目录本身）。
+- profile 的 `extraFiles` 增到 3 条：`/root/.hermes/profiles/cs-main/.env` 加入原有两个 attendance 文件。
+  - `webchat.service` 用的是 `EnvironmentFile=/root/.hermes/profiles/cs-main/.env`，没有它服务起不来（`start_rc=1`、`activating (auto-restart)`）。
+  - `GATEWAY_ALLOW_ALL_USERS` **只**存在于这个 profile `.env`，全机没有第二个来源。
+  - 两个 `.env` 是**互补不是冗余**：`QQ_APP_ID` 与 `QQ_CLIENT_SECRET` 在两处的值**不同**，「让 home 覆盖 profile」会弄坏其中一个。
+
+### 验证
+
+- 1063 / 1063 单测通过（`node --test --test-concurrency=1`，110 文件，98 秒）。
+- **变异测试 21/21 KILLED**，覆盖四处修复：conf 恢复 13 项、dbfilter 回写 8 项。其中 3 项首轮存活，每一项都暴露出一个真正薄弱的断言——`M43`（写入后不重启）被脚本里更靠前的 `docker start` 掩盖；`M44`（不解析挂载源）仅凭脚本文本里**含有** `docker inspect` / `Destination` 字样就被满足；`M47`（`rc=97` → `0`）把「拿不到宿主路径」变成了「报告成功」。
+- 测试机沙箱三场景：覆盖已有 conf → `<REDACTED>` 行 0 条、`admin_passwd` 恰好 1 条、真值保留在末行、备份副本已生成；纯新增 → `<REDACTED>` 0 条；拿不到宿主路径 → `CONF_RC=97` 且一个字节都没写。
+
+### 教训
+
+**当没有人从「应用真正读的地方」回读时，「代码跑了」和「代码生效了」的输出一模一样。** `dbfilter` 回写靠读一个应用从不打开的文件，报了几个月 `applied: true`。这次演练能发现它，只因为我们是从容器内部验证的。
+
 ## [0.2.9] — 2026-11-24
 
 **主题：把灾备边界从「整台服务器」收敛到「业务状态」—— 新增职责四分类，并给散落的关键单文件一条加密通道。**
