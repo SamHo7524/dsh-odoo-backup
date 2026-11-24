@@ -6,6 +6,53 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.3.1] — 2026-11-24
+
+**Theme: a restored service is not restored just because its files are back. `/opt/web_cs` came back complete — `server.py`, `kb_config.json`, embeddings, `query_log.db` — and still could not start, because nothing recorded which 65 Python packages it needs.**
+
+### Added
+
+- **Dependency snapshots** (`lib/deps-lock.js`, `lib/deps-lock-runner.js`). A server can now declare `depsLocks`, each pointing at a virtualenv; the backup runs `<venv>/bin/pip freeze` **on the live environment** and ships the result inside the encrypted package as `<name>-requirements.lock`.
+  - Every lock file carries the exact **Python version**, pip version, UTC generation timestamp, package count, and a `# restore:` line with the command that rebuilds it. A snapshot without the interpreter version cannot tell you whether rebuilding is even possible.
+  - `MANIFEST.depsLocks` records name / file / bytes / SHA-256 / pythonVersion / packages per snapshot. Bytes and SHA-256 are computed **remotely** so the manifest describes what is actually on disk.
+  - Zero packages is a **failure**, not a success: an empty lock file looks like a delivered dependency record while guaranteeing the service will not come back.
+  - Config shorthand: `depsLocks: ['/opt/web_cs/venv']` derives the name `web-cs` (walks up one level when the last segment is a generic `venv` / `.venv` / `env` / `virtualenv`).
+- **`buildDepsRestoreScript`** — rebuild path for drills: create the venv, `pip install -r` the lock, then read `pip freeze` back **from the target venv** so the result can be diffed against the lock. `compareFreezeToLock` reports both `missing` and `extra`; extra packages matter because a different numpy build changes numeric results.
+
+### Why this is not just another file in the package
+
+- `extraFiles` collects files that **already exist** (a `.env`, a start script): the remote side `stat`s them and tars them.
+- `depsLocks` collects a **snapshot generated on the spot**: the artifact does not exist until the backup runs, and it can fail in ways a missing file cannot (no venv, no `bin/pip`, `pip freeze` broken, empty result).
+
+Keeping them separate is deliberate — merging them would force one failure model onto two different problems.
+
+### Fixed — found by running the restore script on a real host, not by any unit test
+
+The restore script returned:
+
+```
+DREST_RC=98
+DREST_ERR=venv 创建失败（退出码 1）：
+/tmp/_drestore.sh: line 41: /tmp/dlock-restore/venv.venv-err.98344: No such file or directory
+```
+
+Two independent defects, and the second **swallowed the first one's explanation**:
+
+1. The script never created the target's parent directory. `python -m venv /tmp/dlock-restore/venv` fails outright when `/tmp/dlock-restore` does not exist — and a drill almost always targets a fresh path.
+2. The stderr capture file was written as `"$TARGET.venv-err.$$"`, i.e. **inside the directory that does not exist yet**. The redirection itself failed, so `VMSG` was always empty and the error message came out as a bare colon. The script failed, and its own logging mechanism destroyed the reason.
+
+Both write paths now create the parent first (`mkdir -p "$(dirname "$TARGET")"`, `DREST_RC=97` if that fails) and put capture files under `${TMPDIR:-/tmp}`. When no message can be captured at all, the error now says so explicitly instead of printing nothing.
+
+### Verification
+
+- 1125 / 1125 unit tests pass (`node --test --test-concurrency=1`, 113 files, 95 s).
+- **Mutation testing 15/15 KILLED** for this release: 12 on the dependency-snapshot path, 3 on the two restore-script defects.
+- **Real host, real venv** (test host only; production read-only): generated a lock from `/root/attendance-system/venv` → `34` packages, `951 B`, `python 3.12.3`, `pip 24.0`, SHA-256 `064fea01…`. Rebuilt into a fresh venv and read `pip freeze` back: **34 / 34 identical, `diff` empty**. Then removed every artifact.
+
+### Lesson
+
+A mutation survived because every assertion about the new call site was a **source-text** check: replacing the call with `await Promise.resolve(...); void packDepsLocks; if (false) await packDepsLocks({` left the literal `await packDepsLocks(` in the file, so all three assertions stayed green while no lock was ever produced. This is the third time in this project that a static assertion could not distinguish "the code is written" from "the code runs" (see `RET-1`, `RET-3`). The fix is always the same: **execute the real function through to its `return` and look at the value**.
+
 ## [0.3.0] — 2026-11-24
 
 **Theme: a real full-restore drill on a scratch host found four restore-path failures that every unit test had been happy to call green. All four are fixed here, and each fix is locked by mutation-verified tests.**

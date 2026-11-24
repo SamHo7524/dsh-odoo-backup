@@ -4,3 +4,8 @@ node_modules/
 .vscode/
 .idea/
 .DS_Store
+# 构建/演练临时产物（不进仓库）
+.packcheck-*/
+_*.sh
+_*.mjs
+_*.py

@@ -264,8 +264,23 @@ if (dryRun) { log('\nDRY-RUN OK（未写远端）'); process.exit(0); }
 if (!releasesOnly) {
   log('=== mirror to publish repo ===');
   // robocopy 用 0–7 表示成功（1 = 有文件被复制），>=8 才是失败。
+  //
+  // /MIR 会把工作区**一切**都镜像过去，包括验证沙箱与一次性脚本。v0.3.0 发布时
+  // `.packcheck-0.2.6-*/`（43 个文件）与 `_scan*.sh` 就是这样进了公开仓库。
+  // 排除项：.git / node_modules（本来就有）+ 验证沙箱 + 下划线开头的临时脚本。
+  // robocopy 的 /XF 通配只能匹配文件名，不能带路径，所以 `_*.sh` 这类规则对
+  // 任何目录下的同名文件都生效 —— 这也正是我们要的（防止将来又漏）。
+  // /XD 则要带完整路径才能排除嵌套目录。
+  // `scripts/drills/` 也排除：里面硬编码了生产主机 IP、SSH 私钥路径与主机指纹，
+  // 属于运维操作脚本，不属于插件本体（package.json 的 files 本来也不含 scripts/）。
+  const excludeDirs = ['.git', 'node_modules', '_transfer', join(ROOT, 'scripts', 'drills')];
+  const excludeFiles = ['.packcheck-*', '_*.sh', '_*.mjs', '_*.py', '_*.txt'];
   try {
-    execFileSync('robocopy', [ROOT, REPO, '/MIR', '/XD', '.git', 'node_modules', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], { stdio: 'pipe', cwd: ROOT });
+    execFileSync(
+      'robocopy',
+      [ROOT, REPO, '/MIR', '/XD', ...excludeDirs, '/XF', ...excludeFiles, '/NFL', '/NDL', '/NJH', '/NJS', '/NP'],
+      { stdio: 'pipe', cwd: ROOT },
+    );
   } catch (e) {
     if (typeof e.status !== 'number' || e.status >= 8) die(`robocopy 失败 (exit ${e.status})`);
   }

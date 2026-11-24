@@ -6,6 +6,53 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.3.1] — 2026-11-24
+
+**主题：文件都回来了，不等于服务能跑起来。`/opt/web_cs` 恢复后 `server.py`、`kb_config.json`、embeddings、`query_log.db` 一应俱全，却仍然起不来——因为没有任何地方记录它需要哪 65 个 Python 包。**
+
+### 新增
+
+- **依赖快照**（`lib/deps-lock.js`、`lib/deps-lock-runner.js`）。服务器现在可以声明 `depsLocks`，每条指向一个虚拟环境；备份时在**运行中的环境**里执行 `<venv>/bin/pip freeze`，结果以 `<name>-requirements.lock` 随加密包一起带走。
+  - 每份锁文件都记录精确的 **Python 版本**、pip 版本、UTC 生成时间、包数量，以及一行 `# restore:` 重建命令。只记包而不记解释器版本，等于无法判断「能不能重建」。
+  - `MANIFEST.depsLocks` 逐条记录 name / file / bytes / SHA-256 / pythonVersion / packages。字节数与 SHA-256 在**远端**计算，MANIFEST 描述的就是磁盘上真实的那份。
+  - **0 个包判为失败**，不是成功：空锁文件看起来像「已交付依赖依据」，实际保证服务一定回不来。
+  - 配置支持简写：`depsLocks: ['/opt/web_cs/venv']` 自动派生名字 `web-cs`（末段是 `venv` / `.venv` / `env` / `virtualenv` 这类通用名时向上取一级）。
+- **`buildDepsRestoreScript`**——演练用的重建路径：建 venv → `pip install -r` 锁文件 → **从目标 venv** 回读 `pip freeze`，供与锁文件对账。`compareFreezeToLock` 同时报 `missing` 与 `extra`；多装的包也要报，因为换一个 numpy 版本就会让数值结果漂移。
+
+### 为什么不塞进 extraFiles
+
+- `extraFiles` 收的是**已经存在的文件**（`.env`、启动脚本）：远端 `stat` 一下就能打包。
+- `depsLocks` 收的是**现场生成的快照**：产物在备份跑起来之前根本不存在，失败方式也不同（没有 venv、没有 `bin/pip`、`pip freeze` 报错、结果为空）。
+
+刻意分开：合并会把一个问题域的失败模型强加到另一个问题域上。
+
+### 修复——真机跑恢复脚本才发现的（单元测试没发现）
+
+恢复脚本返回：
+
+```
+DREST_RC=98
+DREST_ERR=venv 创建失败（退出码 1）：
+/tmp/_drestore.sh: line 41: /tmp/dlock-restore/venv.venv-err.98344: No such file or directory
+```
+
+两个独立缺陷，而且第二个**把第一个的失败原因吞掉了**：
+
+1. 脚本没有先创建目标的父目录。`/tmp/dlock-restore` 不存在时 `python -m venv /tmp/dlock-restore/venv` 直接失败——而演练几乎总是指向一个新路径。
+2. 错误捕获文件写成 `"$TARGET.venv-err.$$"`，即落在**那个还不存在的目录里**。重定向自身失败，于是 `VMSG` 恒为空，报错信息只剩一个冒号。**脚本失败了，而它自己的日志机制把失败理由毁掉了。**
+
+现在两条写入路径都先建父目录（失败返回 `DREST_RC=97`），捕获文件统一放 `${TMPDIR:-/tmp}`。完全拿不到错误输出时，错误信息会明说拿不到，而不是打印一片空白。
+
+### 验证
+
+- 单元测试 **1125 / 1125** 通过（`node --test --test-concurrency=1`，113 文件，95 s）。
+- 本版**变异验证 15/15 KILLED**：依赖快照链路 12 个，恢复脚本两个缺陷 3 个。
+- **真机真 venv**（仅测试机，生产只读）：从 `/root/attendance-system/venv` 生成锁 → `34` 个包、`951 B`、`python 3.12.3`、`pip 24.0`、SHA-256 `064fea01…`；重建到新 venv 后回读 `pip freeze`：**34 / 34 完全相同，`diff` 为空**。随后清掉全部产物。
+
+### 教训
+
+有一个变异**存活**了，因为关于新调用点的三条断言全是**源码文本**检查：把调用换成 `await Promise.resolve(...); void packDepsLocks; if (false) await packDepsLocks({` 之后，字面量 `await packDepsLocks(` 仍在文件里，三条断言全绿，而锁文件一份也没生成。这在本项目里已是第三次「静态断言分不清『代码写了』和『代码跑了』」（见 `RET-1`、`RET-3`）。办法永远一样：**把真函数执行到 `return`，然后看那个值**。
+
 ## [0.3.0] — 2026-11-24
 
 **主题：在临时主机上做了一次真恢复演练，发现四处「单元测试全绿、真恢复起不来」的恢复链缺陷。四处均已修复，每处都由变异验证过的测试锁住。**

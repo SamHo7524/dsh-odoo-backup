@@ -70,6 +70,22 @@ export const Config = z.object({
             '加密单文件备份（v0.2.9）：容器 .env / 启动脚本这类「散落的关键配置」。'
             + '只进加密主包，不进 L2 未加密包；MANIFEST 只记路径与元数据，绝不记内容',
           ),
+        depsLocks: z
+          .array(
+            z.union([
+              z.string().description('虚拟环境目录绝对路径，如 /opt/web_cs/venv（快照名自动派生）'),
+              z.object({
+                name: z.string().description('快照名（小写字母/数字/连字符），如 web-cs；产物为 <name>-requirements.lock'),
+                venvPath: z.string().required().description('虚拟环境目录绝对路径，如 /opt/web_cs/venv'),
+              }),
+            ]),
+          )
+          .default([])
+          .description(
+            '依赖快照备份（v0.3.1）：在运行中的 venv 上执行 pip freeze，记录精确版本 + Python 版本 + '
+            + '生成时间 + SHA-256。用于「有 65 个包却没有任何 requirements 文件」这类服务'
+            + '（如 /opt/web_cs）——只恢复源码和配置不能保证服务重新运行',
+          ),
       }),
     )
     .default([])
