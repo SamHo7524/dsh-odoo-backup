@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { normalizeExtras } from '../lib/extra-paths.js';
+import { normalizeExtraFiles } from '../lib/extra-files.js';
 
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 // 源码跨行缩进会打断逐字段正则，先压平空白再匹配。
@@ -51,4 +52,36 @@ test('CXP-4 含 extraPaths 的服务器对象经校验后字段完整保留', ()
   assert.equal(r.extras[0].path, '/root/Documents/Obsidian Vault');
   assert.deepEqual(r.extras[0].exclude, ['.git', '.obsidian']);
   assert.equal(r.extras[0].maxBytes, 1024 ** 3);
+});
+
+// ---------------- v0.2.9：加密单文件 ----------------
+//
+// 这几条不是「补个断言让覆盖率好看」：schema 少声明一个字段，schemastery 会把它
+// **静默剥掉**，配置存不住、备份包里就没有那些文件，而回执一切正常 —— v0.2.2 的
+// extraPaths 就是这么错过一次的（见 CXP-1 注释）。
+
+test('CXP-5 Config schema 的服务器项声明 extraFiles 字段（否则保存时被剥掉）', () => {
+  assert.match(indexFlat, /extraFiles:\s*z\s*\.\s*array\(/,
+    'server schema 必须声明 extraFiles，否则 schemastery 会静默剥字段、配置存不住');
+});
+
+test('CXP-6 extraFiles 子项只有 path，且是必填字符串', () => {
+  assert.match(indexFlat, /extraFiles:\s*z\s*\.\s*array\(\s*z\s*\.\s*object\(\s*\{\s*path:\s*z\s*\.\s*string\(\)\s*\.\s*required\(\)/,
+    'extraFiles 子项必须是 { path: z.string().required() }：没有 name/exclude，它只收集单文件');
+});
+
+test('CXP-7 extraFiles 与 extraPaths 是两套独立配置，不能共用同一字段', () => {
+  // 共用会导致：单文件占用 extraPaths 的 8 个名额，且被当成目录走 [ -d "$SRC" ] 必然失败。
+  assert.match(indexFlat, /extraPaths:\s*z/, 'extraPaths 必须独立存在');
+  assert.match(indexFlat, /extraFiles:\s*z/, 'extraFiles 必须独立存在');
+  // 数量上限也不同（8 vs 16），不能靠同一个常量。
+  const MAX_EXTRAS = 8;
+  assert.notEqual(normalizeExtraFiles(Array.from({ length: MAX_EXTRAS + 1 }, (_, i) => `/opt/f${i}`)).ok, false,
+    'extraFiles 上限必须大于 extraPaths 的 8 条，否则「不占名额」这句话就是空的');
+});
+
+test('CXP-8 未配置 extraFiles 时归一为空数组（服务层据此放行）', () => {
+  const r = normalizeExtraFiles(undefined);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.files, [], '未配置加密单文件必须是空数组，而不是 undefined');
 });

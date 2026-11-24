@@ -59,6 +59,17 @@ export const Config = z.object({
           )
           .default([])
           .description('额外路径备份（v0.2.2）：把知识库 / hermes 等目录与数据库打进同一个加密包'),
+        extraFiles: z
+          .array(
+            z.object({
+              path: z.string().required().description('远端绝对文件路径，如 /opt/1panel/runtime/python/attendance/.env'),
+            }),
+          )
+          .default([])
+          .description(
+            '加密单文件备份（v0.2.9）：容器 .env / 启动脚本这类「散落的关键配置」。'
+            + '只进加密主包，不进 L2 未加密包；MANIFEST 只记路径与元数据，绝不记内容',
+          ),
       }),
     )
     .default([])

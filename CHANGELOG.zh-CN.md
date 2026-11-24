@@ -6,6 +6,60 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.2.9] — 2026-11-24
+
+**主题：把灾备边界从「整台服务器」收敛到「业务状态」—— 新增职责四分类，并给散落的关键单文件一条加密通道。**
+
+### 背景（用户裁决 m05737 / m06047）
+
+v0.2.8 之前，只要 Discovery 发现一个目录就倾向于建议把它打进包。真机暴露出三个实际错位：
+
+| 错位 | 量化 |
+|---|---|
+| `web-stack` 把 262.7 MB 原始访问日志打进主备份 | `/opt/1panel/www/sites/www.toogel.cn/log` = 262,692,528 B |
+| `waf-data` 整目录打包，其中 251 KB 是 WAF 程序自带资源、1.36 MB 是运行状态库 | `geo` 27.9 MB + `rules`/`default`/`html`/`db` |
+| `hermes-home` 未排 `.env`，密钥全靠加密包兜底（这一条是对的，但要显式说明） | 24 个键 |
+
+用户的重新定义是：**「基础设施负责提前准备，灾备系统负责恢复业务状态。」**
+
+并且明确反对「按目录给分类」：`1pwaf/data` 一个目录里同时有四种职责的资产。
+
+### 新增
+
+- **Discovery 职责四分类**（`lib/discovery/disposition.js`）：`RESTORE_REQUIRED` / `PREINSTALLED_RUNTIME` / `REBUILDABLE_DEPENDENCY` / `EXCLUDED`。
+  - 判定顺序 **EXCLUDED → REBUILDABLE → PREINSTALLED → 默认 RESTORE_REQUIRED**，默认落最后者，因为漏备份的代价不可恢复。
+  - `WAF_SUBDIR_DISPOSITION` 按子域精确判（`sites`/`conf` → 恢复、`rules`/`default`/`html` → 预置、`db` → 排除、`geo` → 可重建）。
+  - 与既有 `coverage` 五态**正交**：`PREINSTALLED_RUNTIME + coverage:none` 是**正确状态**，`RESTORE_REQUIRED + none` 才是真缺口。
+- **报告第五档 `inventory`**：不需要备份的资产进清单另列，不再混进「建议新增」或「待确认」。报告头新增两行：`职责分布：…` 与 `不需要备份（清单另列）：… 共 N 条`。
+- **加密单文件机制**（`lib/extra-files.js` + `lib/extra-files-runner.js`）：承载容器 `.env` / 启动脚本这类散落的关键配置。
+  - 不占 `extraPaths` 名额（上限 16 vs 8）；只进加密主包，**绝不进 L2 未加密包**。
+  - MANIFEST 只记 `path/bytes/mode/uid/gid/sha256`，**不记内容**。
+  - 任一文件缺失 / 不是普通文件 / 不可读 → **整体 fail-closed**，错误里逐个点名，绝不静默跳过。
+  - 远端脚本逐条 `stat` 后再打包，成员名去前导 `/`，恢复时 `tar -C / -xzf` 原位还原。
+- **Config schema 声明 `extraFiles`**：不声明会被 schemastery 静默剥字段。
+
+### 变更
+
+- `web-stack` 排除规则 `./log` → **`*/log`**（原规则按 tar 语义是顶层锚定，命不中第二层，是死规则）；删除 `./index`（`index` 里是 Bing/Google 验证文件与 `llms.txt`，属站点资产）。
+- `web-cs` 排除规则 `./__pycache__` → **`*/__pycache__`**（同样是死规则：实际只有 `scripts/__pycache__` 命中不到顶层锚定）。
+- `waf-data` 排除规则 `./geo` → **`./geo` + `./rules` + `./default` + `./html`**；`db` **按用户裁决保留**——「WAF 数据库不只是日志。即使当前事件表是空的，也不能据此认定未来数据库没有需要恢复的状态。」
+- 修掉一个真实设计缺陷：`excludedByExtraPath` 原本排在职责判定之前，导致 `venv` 这类「本来就该排除」的目录落进 confirm 并附带「请修改那条排除规则」——那条规则是对的。改为非 `RESTORE_REQUIRED` 一律先判职责。
+
+### 修复
+
+- 报告「已忽略」计数按 `${bucket}:${path}` 去重（`/etc/default` 会被多个 unit 的 `EnvironmentFile` 父目录重复命中）。
+- `renderInventory` 空组仍渲染「共 0 条」，不省略整节（否则「没有预置项」和「这一节没实现」看起来一样）。
+
+### 验证
+
+- 1001 / 1001 单测通过（`node --test --test-concurrency=1`，105 个测试文件，98.8 s）。
+- **变异验证 6/6 KILLED**：不传 `extraFiles` 给 runBackup / 缺文件静默跳过 / MANIFEST 假装有 / 条目数不一致放行 / 脚本改用 `set -e` / 重复路径放行。
+- 真机（toogel）：`counts={"covered":20,"suggest":0,"confirm":2,"overflow":0,"inventory":10}`、`disposition={"RESTORE_REQUIRED":22,"PREINSTALLED_RUNTIME":9,"REBUILDABLE_DEPENDENCY":0,"EXCLUDED":1}`；confirm 只剩 2 条真缺口（attendance 的两个单文件，现由加密单文件机制承接）。
+
+### 教训
+
+**「没找到」和「确认不存在」必须是两种不同的字。** 报告里写「未发现」会被读成「已确认没问题」，所以 inventory 的每一组都带一句说明它的 `coverage:none` 是正确状态。
+
 ## [0.2.8] — 2026-11-23
 
 **主题：把「独立业务系统」纳入依赖图 —— Discovery 不再只看得见 Odoo 模块依赖的服务。**

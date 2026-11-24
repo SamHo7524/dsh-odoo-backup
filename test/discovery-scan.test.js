@@ -240,10 +240,17 @@ test('DSC-T2 未覆盖且存在可读 → suggest；被 extraPaths 排除的子�
   });
   assert.equal(r.suggest.length, 1);
   assert.equal(r.suggest[0].path, '/opt/kb_data');
-  // web_cs/venv 在 extraPaths 之下但命中 exclude → 未覆盖
-  const venv = [...r.suggest, ...r.confirm, ...r.overflow].find((i) => i.path === '/opt/web_cs/venv');
+  // web_cs/venv 在 extraPaths 之下但命中 exclude → 未覆盖。
+  // 它同时被判为 REBUILDABLE_DEPENDENCY，所以落在 inventory（第五档）而不是 confirm：
+  // 排除规则与职责判定一致，没有需要人决定的事。但「不能静默消失」这条必须继续守住，
+  // 所以这里把 inventory 也纳入查找范围。
+  const venv = [...r.suggest, ...r.confirm, ...r.overflow, ...r.inventory].find(
+    (i) => i.path === '/opt/web_cs/venv',
+  );
   assert.ok(venv, '被排除的子目录必须仍然出现在报告里，不能静默消失');
   assert.equal(venv.coverage, 'none');
+  assert.equal(venv.disposition, 'REBUILDABLE_DEPENDENCY');
+  assert.match(venv.reasons.join(' '), /与职责判定一致/);
 });
 
 test('DSC-T3 AC-10 只有静态扫描证据的路径绝不出现在 suggest', () => {

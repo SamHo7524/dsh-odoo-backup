@@ -6,6 +6,60 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.2.9] — 2026-11-24
+
+**Theme: narrow the disaster-recovery boundary from "the whole server" to "business state" — adds a four-way disposition classification and an encrypted channel for scattered critical single files.**
+
+### Background (user rulings m05737 / m06047)
+
+Before v0.2.8, whenever Discovery found a directory it leaned toward suggesting it for the backup package. Three real misplacements surfaced on the live host:
+
+| Misplacement | Measured |
+|---|---|
+| `web-stack` packed 262.7 MB of raw access logs into the main backup | `/opt/1panel/www/sites/www.toogel.cn/log` = 262,692,528 B |
+| `waf-data` was packed whole, of which 251 KB is WAF program resources and 1.36 MB is runtime state DBs | `geo` 27.9 MB + `rules`/`default`/`html`/`db` |
+| `hermes-home` did not exclude `.env`, relying entirely on the encrypted package (correct, but must be stated) | 24 keys |
+
+The user's redefinition: **"Infrastructure is provisioned in advance; the DR system restores business state."**
+
+They explicitly rejected classifying by directory: `1pwaf/data` holds four different dispositions inside one directory.
+
+### Added
+
+- **Discovery four-way disposition** (`lib/discovery/disposition.js`): `RESTORE_REQUIRED` / `PREINSTALLED_RUNTIME` / `REBUILDABLE_DEPENDENCY` / `EXCLUDED`.
+  - Order **EXCLUDED → REBUILDABLE → PREINSTALLED → default RESTORE_REQUIRED**; the default is last because a missed backup is unrecoverable.
+  - `WAF_SUBDIR_DISPOSITION` decides per subdirectory (`sites`/`conf` → restore, `rules`/`default`/`html` → preinstalled, `db` → excluded, `geo` → rebuildable).
+  - **Orthogonal** to the existing `coverage` states: `PREINSTALLED_RUNTIME + coverage:none` is a **correct** state; only `RESTORE_REQUIRED + none` is a real gap.
+- **Fifth report bucket `inventory`**: assets not needing backup are listed separately instead of being mixed into "suggested" or "confirm". Report header gains two lines: `职责分布：…` and `不需要备份（清单另列）：…`.
+- **Encrypted single-file mechanism** (`lib/extra-files.js` + `lib/extra-files-runner.js`) for container `.env` and startup scripts.
+  - Does not consume `extraPaths` slots (16 vs 8); goes only into the encrypted main package, **never** into the unencrypted L2 package.
+  - MANIFEST records `path/bytes/mode/uid/gid/sha256` only — **never content**.
+  - Any missing / non-regular / unreadable file → **fail-closed as a whole**, naming each offending file; never silently skipped.
+  - The remote script `stat`s every file before packing; members drop the leading `/` so `tar -C / -xzf` restores in place.
+- **Config schema declares `extraFiles`**: without it schemastery silently strips the field.
+
+### Changed
+
+- `web-stack` exclude `./log` → **`*/log`** (the old pattern was top-level anchored and matched nothing — a dead rule); removed `./index` (it holds Bing/Google verification files and `llms.txt`, which are site assets).
+- `web-cs` exclude `./__pycache__` → **`*/__pycache__`** (also a dead rule: only `scripts/__pycache__` exists).
+- `waf-data` exclude `./geo` → **`./geo` + `./rules` + `./default` + `./html`**; `db` is **kept per the user ruling** — "the WAF database is not just logs. Even if the event tables are empty now, that does not prove future databases hold no state worth restoring."
+- Fixed a real design flaw: `excludedByExtraPath` was evaluated before the disposition check, so directories that *should* be excluded (like `venv`) landed in confirm with "please modify that exclude rule" — when that rule was correct. Non-`RESTORE_REQUIRED` now goes to inventory first.
+
+### Fixed
+
+- The report's "ignored" counter is deduped by `${bucket}:${path}` (`/etc/default` was hit repeatedly by multiple units' `EnvironmentFile` parents).
+- `renderInventory` renders empty groups as "共 0 条" rather than omitting the section (otherwise "no preinstalled items" and "this section is unimplemented" look the same).
+
+### Verification
+
+- 1001 / 1001 unit tests pass (`node --test --test-concurrency=1`, 105 files, 98.8 s).
+- **Mutation testing 6/6 KILLED**: not passing `extraFiles` to runBackup / silently skipping a missing file / MANIFEST claiming a package that was never built / allowing a count mismatch / switching the script to `set -e` / allowing duplicate paths.
+- Live host (toogel): `counts={"covered":20,"suggest":0,"confirm":2,"overflow":0,"inventory":10}`, `disposition={"RESTORE_REQUIRED":22,"PREINSTALLED_RUNTIME":9,"REBUILDABLE_DEPENDENCY":0,"EXCLUDED":1}`; confirm is down to 2 real gaps (attendance's two single files, now covered by the encrypted mechanism).
+
+### Lesson
+
+**"Not found" and "confirmed absent" must be different words.** Writing "not discovered" gets read as "confirmed fine", so every inventory group carries a note that its `coverage:none` is the correct state.
+
 ## [0.2.8] — 2026-11-23
 
 **Theme: bring "standalone business systems" into the dependency graph — Discovery no longer sees only services referenced by Odoo modules.**

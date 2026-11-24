@@ -210,7 +210,10 @@ function ctx(extra = []) {
   };
 }
 
-test('DN-T1 数据库物理目录进待确认，理由说明由逻辑导出覆盖', () => {
+test('DN-T1 数据库物理目录进清单（inventory），不进待确认也不进建议', () => {
+  // 契约变更（2026-11-24 用户边界裁决）：这类路径判 disposition=EXCLUDED，
+  // 归入 inventory 清单而不是 confirm。理由：confirm 是「需要人做决定的待办」，
+  // 而物理目录的正确处置已经确定（靠 pg_dump），没有待决事项。
   const tier = tierCandidates({
     candidates: [
       { path: '/opt/1panel/apps/postgresql/postgresql/data', sources: ['L3-runtime'], confidence: 'high' },
@@ -224,11 +227,16 @@ test('DN-T1 数据库物理目录进待确认，理由说明由逻辑导出覆�
     configuredCount: 0,
   });
   assert.equal(tier.suggest.length, 0, '数据库物理目录绝不能进建议');
-  assert.equal(tier.confirm.length, 1);
-  assert.match(tier.confirm[0].reasons.join('；'), /物理/);
+  assert.equal(tier.confirm.length, 0, '处置已确定，不该进待确认');
+  assert.equal(tier.inventory.length, 1);
+  assert.equal(tier.inventory[0].disposition, 'EXCLUDED');
+  assert.match(tier.inventory[0].dispositionReason, /物理|逻辑导出|pg_dump/);
 });
 
 test('DN-T2 单文件进待确认，理由说明 extraPaths 只支持目录', () => {
+  // `/opt/1panel/runtime/python/attendance/.env` 是 attendance 的业务级环境变量，
+  // 属 RESTORE_REQUIRED，因此会走到「单文件」这条降级。
+  // （曾把它归到 `/opt/1panel/runtime` 预置前缀，导致业务配置被判成「不用备份」。）
   const tier = tierCandidates({
     candidates: [{ path: '/opt/1panel/runtime/python/attendance/.env', sources: ['L3-runtime'], confidence: 'high' }],
     context: ctx(),
@@ -240,10 +248,12 @@ test('DN-T2 单文件进待确认，理由说明 extraPaths 只支持目录', ()
     configuredCount: 0,
   });
   assert.equal(tier.suggest.length, 0);
+  assert.equal(tier.confirm.length, 1);
   assert.match(tier.confirm[0].reasons.join('；'), /单文件/);
 });
 
-test('DN-T3 install-tree 进待确认，理由点名镜像重建', () => {
+test('DN-T3 install-tree 进清单，理由点名镜像重建', () => {
+  // 同 DN-T1 的契约变更：镜像安装树判 PREINSTALLED_RUNTIME，归 inventory。
   const tier = tierCandidates({
     candidates: [
       {
@@ -262,7 +272,10 @@ test('DN-T3 install-tree 进待确认，理由点名镜像重建', () => {
     configuredCount: 0,
   });
   assert.equal(tier.suggest.length, 0);
-  assert.match(tier.confirm[0].reasons.join('；'), /镜像/);
+  assert.equal(tier.confirm.length, 0);
+  assert.equal(tier.inventory.length, 1);
+  assert.equal(tier.inventory[0].disposition, 'PREINSTALLED_RUNTIME');
+  assert.match(tier.inventory[0].dispositionReason, /镜像/);
 });
 
 test('DN-T4 真阳性仍然进建议：/root/attendance-system 是目录且未覆盖', () => {

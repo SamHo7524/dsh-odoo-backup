@@ -23,7 +23,7 @@ import { runBackup } from '../lib/backup.js';
  * 构造一个让 runBackup 走完「建目录→dump→打包→extras→MANIFEST→外层 tar→下载→加密→清理→return」
  * 的假环境。所有远端命令按脚本指纹分发，返回值只需含各段标记。
  */
-function makeFakeExec({ extrasBytes = 1024 } = {}) {
+function makeFakeExec({ extrasBytes = 1024, withExtraFiles = false } = {}) {
   const calls = [];
   const exec = async (server, script, opts = {}) => {
     calls.push({ script, stdin: opts.stdin ?? '' });
@@ -96,6 +96,26 @@ function makeFakeExec({ extrasBytes = 1024 } = {}) {
           `EXTRA_BYTES=${extrasBytes}`,
           'EXTRA_SHA256=' + 'b'.repeat(64),
           'EXTRA_ERR=',
+        ].join('\n'),
+        stderr: '',
+      };
+    }
+    // 5b) 加密单文件打包脚本（v0.2.9）
+    if (s.includes('EFILE_RC=')) {
+      if (!withExtraFiles) {
+        // 没配单文件却被打到，说明调用链多走了一步 —— 直接让测试炸出来。
+        return { code: 0, stdout: 'EFILE_RC=0\nEFILE_COUNT=0\nEFILE_BYTES=0\nEFILE_SHA256=\n', stderr: '' };
+      }
+      const p = '/opt/1panel/runtime/python/attendance/.env';
+      return {
+        code: 0,
+        stdout: [
+          `EFILE\t${p}\t197\t600\t0\t0\t${'d'.repeat(64)}`,
+          'EFILE_RC=0',
+          'EFILE_COUNT=1',
+          'EFILE_BYTES=1024',
+          'EFILE_SHA256=' + 'e'.repeat(64),
+          'EFILE_ERR=',
         ].join('\n'),
         stderr: '',
       };
@@ -189,6 +209,77 @@ test('RET-2 续传路径没有本次打包结果时 extras 为空数组而非 Re
     });
     assert.equal(res.ok, true);
     assert.deepEqual(res.extras, [], '无额外路径时应为空数组');
+  } finally {
+    await rm(localDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------- v0.2.9：加密单文件 ----------------
+//
+// RET-3/RET-4 是变异验证逼出来的：把 `extraFilesResult.file ? {...} : null` 的三元
+// 改成恒真（即「没打包也声称有」）时，全仓库没有一条测试变红 —— 因为此前没有任何
+// 测试**执行到 runBackup 的 return** 去看 extraFiles 到底是什么。
+
+test('RET-3 未配置加密单文件时 extraFiles 为 null（不能声称有）', async () => {
+  const localDir = await makeLocalDir();
+  try {
+    const { exec } = makeFakeExec();
+    const res = await runBackup({
+      server,
+      instance,
+      localDir,
+      passphrase: 'pw',
+      extraPaths: [],
+      extraFiles: [],
+      _execRemote: exec,
+      deps: {
+        scpDownload: async (_server, _remote, localPath) => {
+          await writeFile(localPath, Buffer.alloc(4096, 7));
+        },
+        statfs: async () => ({ bsize: 4096, bavail: 10 ** 9 }),
+      },
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.extraFiles, null,
+      '没收集任何单文件时必须返回 null：返回一个空壳记录等于对外声称「包里有一份单文件包」，而实际没有');
+    assert.equal(res.manifest.extraFiles, null, 'MANIFEST 里同样不能有记录');
+  } finally {
+    await rm(localDir, { recursive: true, force: true });
+  }
+});
+
+test('RET-4 配置了加密单文件时 extraFiles 带逐文件元数据，且不含任何内容字段', async () => {
+  const localDir = await makeLocalDir();
+  try {
+    const { exec } = makeFakeExec({ withExtraFiles: true });
+    const res = await runBackup({
+      server,
+      instance,
+      localDir,
+      passphrase: 'pw',
+      extraPaths: [],
+      extraFiles: [{ path: '/opt/1panel/runtime/python/attendance/.env' }],
+      _execRemote: exec,
+      deps: {
+        scpDownload: async (_server, _remote, localPath) => {
+          await writeFile(localPath, Buffer.alloc(4096, 7));
+        },
+        statfs: async () => ({ bsize: 4096, bavail: 10 ** 9 }),
+      },
+    });
+    assert.equal(res.ok, true);
+    assert.ok(res.extraFiles, '配置了单文件就必须带回执');
+    assert.equal(res.extraFiles.present, true);
+    // 时间戳是运行时生成的，只能断言形态，不能断言具体值。
+    assert.match(res.extraFiles.file, /^extra-files-\d{8}-\d{6}\.tar\.gz$/);
+    assert.equal(res.extraFiles.files.length, 1);
+    assert.equal(res.extraFiles.files[0].path, '/opt/1panel/runtime/python/attendance/.env');
+    assert.equal(res.extraFiles.files[0].mode, '600');
+    // 元数据白名单：多出任何内容类字段都算泄密。
+    assert.deepEqual(Object.keys(res.extraFiles.files[0]).sort(),
+      ['bytes', 'gid', 'mode', 'path', 'sha256', 'uid']);
+    assert.deepEqual(Object.keys(res.manifest.extraFiles).sort(),
+      ['bytes', 'file', 'files', 'present', 'sha256']);
   } finally {
     await rm(localDir, { recursive: true, force: true });
   }
