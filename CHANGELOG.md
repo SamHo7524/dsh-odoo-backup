@@ -6,6 +6,34 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.3.2] — 2026-11-25
+
+**Theme: the parser disagreed with the collector about what "success" looked like, because of a character nobody prints on purpose.**
+
+### Fixed
+
+`parseDepsLockResult` read remote output with `split('\n')` and matched marker lines with `(.*)$`. JavaScript's `.` does not match `\r` — it is a line terminator — so a single `DLOCK_RC=0\r\n` never matched. The metadata lines still parsed (`split('\t')` plus `parseInt` happily eats `34\r`), which produced the worst possible shape of failure:
+
+- the lock file **was** generated, hashed, and reported;
+- the parser still returned `ok: false, reason: '远端依赖快照脚本没有输出 DLOCK_RC，未拿到结果（可能被杀或被截断）'`.
+
+A successful snapshot was reported as **no result at all**, with a reason pointing at a killed process — i.e. it pointed the investigation at the wrong subject entirely.
+
+Found by re-reading the same remote output back through the release build: `parseDepsLockResult(crlf)` → `ok:false`, `parseDepsLockResult(lf)` → `ok:true`, same bytes otherwise.
+
+All remote-text parsing in this module now goes through one `normalizeLines()` that folds `\r\n` and lone `\r` to `\n` before splitting. `parseLockFile` already did this; the marker and entry loops had simply been missed.
+
+### Verification
+
+- 1129 / 1129 unit tests pass (113 files, 98 s).
+- New: `DL-P11` (CRLF must parse identically to LF), `DL-P12` (a `rc=96` failure must stay a failure under CRLF, and `venvPath` must not keep a trailing `\r`), `DL-P13` (lone-`CR` output must still split into lines), `DL-P14` (two snapshots must not collapse into one line under any of LF / CRLF / lone CR).
+- **Mutation 3/3 KILLED**: revert `readMarks` normalization, revert the entry-loop normalization, and narrow `normalizeLines` to `\r\n` only.
+- `DL-P14` exists because `DL-P13` alone was not enough: with a single entry, `DLOCK\t…\t65\rDLOCK_RC=0\r…` still yields the right first six fields, so the collapse was invisible. **A one-element fixture cannot detect a line-joining bug.** Adding the second snapshot made the collapse measurable.
+
+### Lesson
+
+Line endings are a property of the **transport**, not of the program that produced the text. When a parser trusts the transport, "collect the same data through a different path" silently becomes "get a different answer" — and the wrong answer looks like a legitimate failure mode that the code was explicitly designed to report.
+
 ## [0.3.1] — 2026-11-24
 
 **Theme: a restored service is not restored just because its files are back. `/opt/web_cs` came back complete — `server.py`, `kb_config.json`, embeddings, `query_log.db` — and still could not start, because nothing recorded which 65 Python packages it needs.**

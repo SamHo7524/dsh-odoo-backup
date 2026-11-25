@@ -297,6 +297,74 @@ test('DL-P10 远端缺 bash → 明确报 95，不误报成配置问题', () => 
   assert.match(r.reason, /bash/);
 });
 
+test('DL-P11 CRLF 输出与 LF 输出解析结果必须一致', () => {
+  // 真机事故：同一份远端正向输出经中转链路变成 CRLF 后，parseDepsLockResult 报
+  // 「没有输出 DLOCK_RC，未拿到结果」——DLOCK 元数据行解析出来了，标记行却匹配不到，
+  // 于是「成功生成的锁文件」被判成「没拿到结果」。同文件的 parseLockFile 早就做了
+  // CRLF 归一化，说明这是遗漏而非设计。
+  const lf = [
+    `DLOCK\tweb-cs\t/tmp/w/web-cs-requirements.lock\t4096\t${SHA}\t3.12.3\t65`,
+    'DLOCK_RC=0',
+    'DLOCK_COUNT=1',
+  ].join('\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+
+  const a = parseDepsLockResult(lf);
+  const b = parseDepsLockResult(crlf);
+
+  assert.equal(a.ok, true, 'LF 输入应成功');
+  assert.equal(b.ok, true, 'CRLF 输入也必须成功：行尾不是远端脚本的语义');
+  assert.deepEqual(b.entries, a.entries, '条目必须完全一致');
+  assert.equal(b.rc, 0);
+});
+
+test('DL-P12 CRLF 下的失败标记也必须被识别（不能把失败读成成功）', () => {
+  const crlf = 'DLOCK_MISSING\tweb-cs\t/opt/web_cs/venv\t虚拟环境目录不存在\r\nDLOCK_RC=96\r\n';
+  const r = parseDepsLockResult(crlf);
+  assert.equal(r.ok, false, 'CRLF 下 rc=96 仍必须判失败');
+  assert.match(r.reason, /虚拟环境|96/);
+  assert.equal(r.missing.length, 1, 'missing 条目不能被行尾切断');
+  assert.equal(r.missing[0].venvPath, '/opt/web_cs/venv', '路径结尾不能残留 \\r');
+});
+
+test('DL-P13 孤立 CR（无 LF）也必须按行切分', () => {
+  // 某些串口/旧式工具与「只把 \n 换成 \r」的中转脚本会产出孤立 CR。
+  // 只认 \r\n 的归一化会让整段输出变成**一行**，于是 DLOCK_RC 被吞进
+  // 「路径」字段里 —— 表现同样是「成功的结果被判成没拿到结果」。
+  const crOnly = [
+    `DLOCK\tweb-cs\t/tmp/w/web-cs-requirements.lock\t4096\t${SHA}\t3.12.3\t65`,
+    'DLOCK_RC=0',
+    'DLOCK_COUNT=1',
+  ].join('\r');
+  const r = parseDepsLockResult(crOnly);
+  assert.equal(r.ok, true, '孤立 CR 输入应被正确切行后解析成功');
+  assert.equal(r.entries.length, 1);
+  assert.equal(r.entries[0].packages, 65);
+  assert.equal(r.entries[0].pythonVersion, '3.12.3', '字段里不能残留 \\r');
+});
+
+test('DL-P14 多条快照在 CRLF/孤立 CR 下行数不能塌陷', () => {
+  // 单条时「吞行」不一定露馅：一条 DLOCK 行被 `\t` 切开后，前 6 个字段仍然正确，
+  // 只有包数字段尾部沾上了下一行。多配一条就能把「塌陷成一行」直接量出来。
+  const lines = [
+    `DLOCK\tweb-cs\t/tmp/w/web-cs-requirements.lock\t4096\t${SHA}\t3.12.3\t65`,
+    `DLOCK\tattendance\t/tmp/w/attendance-requirements.lock\t951\t${SHA}\t3.12.3\t34`,
+    'DLOCK_RC=0',
+    'DLOCK_COUNT=2',
+  ];
+  for (const [label, text] of [
+    ['LF', lines.join('\n')],
+    ['CRLF', lines.join('\r\n')],
+    ['孤立CR', lines.join('\r')],
+  ]) {
+    const r = parseDepsLockResult(text);
+    assert.equal(r.ok, true, `${label}: 应解析成功`);
+    assert.equal(r.entries.length, 2, `${label}: 两条快照必须解析成两条，不能塌成一条`);
+    assert.deepEqual(r.entries.map((e) => [e.name, e.packages]), [['web-cs', 65], ['attendance', 34]],
+      `${label}: 名称与包数都要精确`);
+  }
+});
+
 // ---------------- DL-F：锁文件格式（生成侧与复核侧必须可对账） ----------------
 
 /** 真机 pip freeze 输出长这样：一行一个 `pkg==ver`，没有注释、没有空行。 */

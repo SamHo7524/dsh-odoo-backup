@@ -279,8 +279,85 @@ v0.2.8 把 `1pwaf/data` 整目录作为一条 extraPath，只排除 `geo`。按�
 
 ---
 
-## 10. 变更记录
+## 10. 预装清单（m07836 第 3 项裁决的固化）
+
+用户裁决原文要点：「预先安装运行环境，灾备恢复业务状态；**依赖必须有明确版本和恢复依据，不能只保证文件存在，却无法保证服务重新运行。**」
+
+### 10.1 分类与裁决
+
+| 项目 | 正式归类 | 裁决 |
+|---|---|---|
+| `python3.12-venv` | 操作系统预装依赖 | **纳入预装清单** |
+| `attendance/requirements-full.txt` | 应用级完整依赖声明 | **纳入恢复清单** |
+| `attendance/requirements.txt` | 基础依赖声明 | 保留（不作恢复依据） |
+| `web-cs-requirements.lock` | 应用级依赖版本快照 | **纳入灾备**（v0.3.1 实现，见 §10.3） |
+
+### 10.2 为什么 `python3.12-venv` 必须预装
+
+真机证据（测试机 2026-11-24）：`/usr/bin/python3 -m venv venv` 报
+
+```
+The virtual environment was not created successfully because ensurepip is not available.
+ModuleNotFoundError: No module named 'ensurepip'
+```
+
+`apt-get install -y python3.12-venv` 后 `install_rc=0`、`ensurepip OK`，同一命令成功。
+
+**没有它，任何「按依赖声明重建 venv」的恢复步骤都走不通**，而这是恢复 attendance 与 web_cs 两个服务的必经之路。因此它是**基础设施负责提前准备**的一项，不是灾备包的内容。
+
+v0.3.1 的 `buildDepsRestoreScript` 在命中 `ensurepip` 时输出
+`DREST_HINT=宿主机缺少 python3-venv（Debian/Ubuntu 为 python3.12-venv）…`，把排查方向直接指到这条。
+
+### 10.3 为什么 attendance 必须用 `requirements-full.txt`
+
+`app.py:26` 有 `from weasyprint import HTML`，而 `requirements.txt` 只有四个包
+（`Flask==3.0.3 / gunicorn==22.0.0 / Werkzeug==3.0.3 / Flask-Session==0.8.0`）。
+
+真机后果：gunicorn worker 报 `ModuleNotFoundError: No module named 'weasyprint'` /
+`Worker failed to boot`。改用 **`requirements-full.txt`（32 个包，含 `weasyprint==69.0`）**
+后 `weasyprint OK 69.0`，`/login` 200、`/dashboard` 302。
+
+→ **`weasyprint` 不能当可选依赖。** 一个「装了四个包就能跑」的假设，会让恢复出的
+attendance 服务在第一次打印报表时崩掉，而登录页看起来是好的。
+
+### 10.4 web_cs 依赖快照（v0.3.1）
+
+`/opt/web_cs` 生产上有 65 个已安装 Python 包，却**没有任何依赖声明文件**
+（`requirements.txt` / `requirements-full.txt` / `pyproject.toml` / `setup.py` / `Pipfile` 全 404）。
+恢复源码与配置后 `webchat.service` 起不来：`Command /opt/web_cs/venv/bin/python3 is not executable`。
+
+v0.3.1 新增 `depsLocks` 配置，备份时在生产 venv 上跑 `pip freeze`，产出
+`web-cs-requirements.lock`，随加密主包带走。锁文件记录 8 行头：
+
+```
+# dsh-odoo-backup deps lock v1
+# name: web-cs
+# venv: /opt/web_cs/venv
+# python: 3.12.3          ← 精确解释器版本，缺了就无法判断能否重建
+# pip: 24.0
+# generated: 2026-11-24T13:14:38Z
+# packages: 65
+# note: pip freeze 是依赖版本快照，不是离线安装介质；PyPI 下架该版本时仍需另行取证（wheel 存档）。
+# restore: python3 -m venv <target> && <target>/bin/pip install -r <this file>
+```
+
+**边界（用户原话）**：`pip freeze` 是版本快照，**不是完整的离线安装介质**。PyPI 下架某版本时
+单有快照仍装不上 → 暂时记录版本与来源即可，关键依赖再考虑存 wheel；**不把整个 65 包 venv 打进包**。
+
+### 10.5 恢复验收方式（用户要求）
+
+1. 建临时 venv，按锁文件 `pip install -r`；
+2. **对比安装后 `pip freeze` 与锁文件**（missing 与 extra 都要报，多装的包会改变行为）；
+3. 执行服务启动测试。
+
+真机已按此验证（测试机 `/root/attendance-system/venv`，34 包 / 951 B / Python 3.12.3）：
+重建后 `pip freeze` 与锁文件 **34 / 34 完全相同，`diff` 为空**。
+
+---
+
+## 11. 变更记录
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-11-24 | 1.0 | 初版。定义四分类、职责表、`1pwaf/data` 七子域判定、PostgreSQL 六项恢复清单、三个实际错位、RB-1~RB-10 验收判据 |
+| 2026-11-24 | 1.1 | 新增 §11 预装清单：固化 m07836 第 3 项裁决（`python3.12-venv` 纳入预装、`requirements-full.txt` 纳入恢复清单、`web-cs-requirements.lock` 纳入灾备），含 v0.3.1 依赖快照机制与真机验收证据 |
