@@ -7,8 +7,8 @@
 通过 SSH 备份数据库、filestore、addons、运行时依赖与配置；恢复采用「临时库验证 → 停机切换 → 失败自动回滚」状态机。主机密钥信任 **fail-closed**：未固定或指纹变化一律拒绝连接。
 
 - 包名：`@local/dsh-odoo-backup`
-- 当前版本：`0.3.2`
-- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.3.2`
+- 当前版本：`0.4.0`
+- 安装源：`github:SamHo7524/dsh-odoo-backup#v0.4.0`
 - 许可：内部使用（`package.json` 中 `private: true`）
 
 > **支持 Odoo 19 与 Odoo 20**（两者均经真机验证）。备份与恢复必须在**同一个大版本内**进行（19 → 19、20 → 20）。**跨大版本恢复（如 19 ↔ 20）不支持**：预检版本闸门会直接拒绝，并列出源/目标两个版本。跨大版本迁移属于独立升级项目（先升级，再建立新的备份基线）。
@@ -20,13 +20,13 @@
 在 DSH 中直接从本仓库安装 bundle：
 
 ```
-github:SamHo7524/dsh-odoo-backup#v0.3.2
+github:SamHo7524/dsh-odoo-backup#v0.4.0
 ```
 
-或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.3.2) 下载安装包：
+或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.4.0) 下载安装包：
 
 ```
-dsh-odoo-backup-0.3.2.tgz
+dsh-odoo-backup-0.4.0.tgz
 ```
 
 > 从 `0.1.x` 升级：插件已由 `dsh-odoo19-backup` 改名为 `dsh-odoo-backup`，仓库同步改名。请先在插件管理里卸载旧 bundle（`@local/dsh-odoo19-backup`），再安装新包。运行时 entry id（`odoo-backup`）未变，服务器列表、口令与设置全部保留。
@@ -142,6 +142,7 @@ mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
 
 ## 安全模型
 
+- **服务器用途（互斥）**：每台服务器都有 `role`——`backup`（备份服务器，默认）或 `restore`（恢复目标），两者互斥，没有 `both`。只有显式设为 `restore` 的服务器才出现在恢复/中立化页，只有 `backup` 服务器出现在备份页。更重要的是，这由**服务层**强制：`backup` / `inspectRestore` / `restore` / `neutralizeStatus` / `applyNeutralize` 都在读到本机配置后、任何副作用前断言用途，因此绕过 GUI 的 Agent 工具路径同样受保护。老配置无 `role` 默认按 `backup`；拼错不会变成恢复目标。在 GUI 里把服务器切到 `restore` 需手输服务器名确认，因为恢复会覆盖目标库并替换其 filestore。
 - **主机密钥**：`guardHostKey` 只放行 `sshConfigAlias` 或与 `pinnedFingerprint` 匹配的连接；`scanHostKey` 只**读取**指纹，`pin` 要求人工确认值并在写 `known_hosts` 前二次校验。
 - **确认令牌**：`odoo_restore action=precheck` 生成绑定 `server + packagePath + neutralize` 的令牌，5 分钟有效、一次性（令牌绑定用规范化后的路径，带引号的 `precheck` 可配不带引号的 `restore`，但换包仍会被拒）；无有效令牌绝不触达 `service.restore`。
 - **同源守卫**：`/odoo-backup/*` UI 路由拒绝跨站请求（403）。这不是鉴权边界，真正的授权由 DSH 会话承担。
@@ -155,7 +156,7 @@ mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
 ## 开发
 
 ```bash
-node --test "test/**/*.test.js"        # 1129 条测试
+node --test "test/**/*.test.js"        # 1166 条测试
 node --check index.js client.js lib/*.js
 node scripts/release-sync-check.mjs    # 校验 tag ↔ GitHub Release ↔ 中英文 CHANGELOG ↔ README
 ```
@@ -193,9 +194,9 @@ scripts/            release-sync-check.mjs（发布一致性闸门）
 
 ## 状态与限制
 
-- 1129 / 1129 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
+- 1166 / 1166 单测通过；`node --check` 覆盖 `index.js`、`client.js`、`lib/*.js` 与发布脚本，全干净。
 - 真机验证：`odoo_backup` 的 `listServers` / `test`（真实 SSH）、`odoo_restore` 状态查询、原生设置分区及其 HTTP 路由。
 - **未执行 / 未授权**：生产主库真实 R1 停机切换、agent 浏览器内点击验证、生产部署。开发全程生产服务器只读。
 - Host 半侧改动需**完全重启 DSH**；Client 半侧硬刷新即可。
 
-完整 0.1.0 → 0.3.2 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
+完整 0.1.0 → 0.4.0 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。

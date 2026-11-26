@@ -7,7 +7,7 @@ const baseServer = {
 };
 
 const cfg = (server = baseServer) => ({
-  servers: [server],
+  servers: [server, { ...server, name: 'staging-restore', role: 'restore' }],
   localBackupDir: 'K:/Backup/odoo',
   passphrase: 'test-pw', // U4：有口令才能走到指纹闸门
   allowUnencryptedPackage: false,
@@ -67,6 +67,6 @@ test('service.backup 未固定指纹时拒绝（凭证已配置，指纹是下�
 test('service.restore 未固定指纹时拒绝（即使包合法）', async () => {
   const d = deps({ guardHostKey: async () => ({ ok: false, error: { message: '尚未确认主机指纹' } }) });
   const svc = createService({ config: cfg(), deps: d });
-  await assert.rejects(() => svc.restore('staging', null, 'K:/b.tar', {}), /指纹/);
+  await assert.rejects(() => svc.restore('staging-restore', null, 'K:/b.tar', {}), /指纹/);
   assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 0);
 });

@@ -9,6 +9,15 @@ const cfg = {
     keyPath: 'C:/k/id', pinnedFingerprint: 'SHA256:abc',
     odooContainer: '1Panel-odoo-5td9', pgContainer: '1Panel-postgresql-ZcrG',
     dbName: 'tg-odoo', dataPath: '/data', addonsPath: '/addons',
+    role: 'backup',
+  }, {
+    // v0.4.0：恢复/中立化路径只允许「恢复目标」。本夹具描述的是同一台演练机的
+    // 恢复副本 —— 与 staging 字段相同、用途不同，用于覆盖 restore/inspectRestore 分支。
+    name: 'staging-restore', host: '119.29.10.202', port: 22, user: 'root',
+    keyPath: 'C:/k/id', pinnedFingerprint: 'SHA256:abc',
+    odooContainer: '1Panel-odoo-5td9', pgContainer: '1Panel-postgresql-ZcrG',
+    dbName: 'tg-odoo', dataPath: '/data', addonsPath: '/addons',
+    role: 'restore',
   }],
   localBackupDir: 'K:/Backup/odoo',
   passphrase: 'test-pw', // U4 fail-closed：备份类测试必须提供有效口令
@@ -85,7 +94,7 @@ test('service.restore 要求备份包存在', async () => {
   const d = deps({ stat: async () => { throw new Error('ENOENT'); } });
   const svc = createService({ config: cfg, deps: d });
   await assert.rejects(
-    () => svc.restore('staging', null, 'K:/missing.tar', {}),
+    () => svc.restore('staging-restore', null, 'K:/missing.tar', {}),
     /备份包不存在/,
   );
 });
@@ -94,7 +103,7 @@ test('service.restore 拒绝未加密包（除非配置显式允许）', async (
   const d = deps({ detectFormat: async () => 'plain' });
   const svc = createService({ config: cfg, deps: d });
   await assert.rejects(
-    () => svc.restore('staging', null, 'K:/b.tar', {}),
+    () => svc.restore('staging-restore', null, 'K:/b.tar', {}),
     /未加密/,
   );
   assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 0);
@@ -103,14 +112,14 @@ test('service.restore 拒绝未加密包（除非配置显式允许）', async (
 test('service.restore 允许未加密包时透传 allowUnencrypted', async () => {
   const d = deps({ detectFormat: async () => 'plain' });
   const svc = createService({ config: cfg, deps: d, allowUnencrypted: true });
-  await svc.restore('staging', null, 'K:/b.tar', {});
+  await svc.restore('staging-restore', null, 'K:/b.tar', {});
   assert.equal(d.calls.some((c) => c[0] === 'runRestore'), true);
 });
 
 test('service.restore 加密包正常执行', async () => {
   const d = deps({ detectFormat: async () => 'dsh-odoo' });
   const svc = createService({ config: cfg, deps: d });
-  const r = await svc.restore('staging', null, 'K:/b.tar.enc', { passphrase: 'pw' });
+  const r = await svc.restore('staging-restore', null, 'K:/b.tar.enc', { passphrase: 'pw' });
   assert.equal(r.ok, true);
   assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 1);
 });
@@ -127,7 +136,7 @@ test('service.status 在恢复进行中标记 running', async () => {
   const gate = new Promise((res) => { release = res; });
   const d = deps({ detectFormat: async () => 'dsh-odoo', runRestore: async () => { await gate; return { ok: true }; } });
   const svc = createService({ config: cfg, deps: d });
-  const p = svc.restore('staging', null, 'K:/b.tar', {});
+  const p = svc.restore('staging-restore', null, 'K:/b.tar', {});
   await new Promise((r) => setTimeout(r, 10));
   assert.equal((await svc.status()).running, true);
   release();
@@ -161,7 +170,7 @@ test('SVC-VG-1 跨大版本：恢复在动手前就被拒绝，绝不调用 runR
   });
   const svc = createService({ config: cfg, deps: d });
   await assert.rejects(
-    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    () => svc.restore('staging-restore', null, 'K:/b.tar.enc', {}),
     (err) => {
       assert.match(err.message, /19\.0-20260619/);
       assert.match(err.message, /20\.0-20261102/);
@@ -178,7 +187,7 @@ test('SVC-VG-2 同大版本：正常执行', async () => {
     readPackageMeta: async () => ({ ok: true, sourceDbName: 'tg-odoo', source: { odooVersion: '19.0-20260619' } }),
   });
   const svc = createService({ config: cfg, deps: d });
-  const r = await svc.restore('staging', null, 'K:/b.tar.enc', {});
+  const r = await svc.restore('staging-restore', null, 'K:/b.tar.enc', {});
   assert.equal(r.ok, true);
   assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 1);
 });
@@ -193,7 +202,7 @@ test('SVC-DIAG-3 恢复失败时错误里必须带诊断与建议（不再只有
   });
   const svc = createService({ config: cfg, deps: d });
   await assert.rejects(
-    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    () => svc.restore('staging-restore', null, 'K:/b.tar.enc', {}),
     (err) => {
       assert.match(err.message, /is_live/);       // 原始错误仍在
       assert.match(err.message, /【诊断】/);
@@ -211,7 +220,7 @@ test('SVC-DIAG-4 未命中的错误原样透出，不伪造诊断', async () => 
   });
   const svc = createService({ config: cfg, deps: d });
   await assert.rejects(
-    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    () => svc.restore('staging-restore', null, 'K:/b.tar.enc', {}),
     (err) => {
       assert.equal(err.message, 'weird unknown failure xyz');
       return true;
@@ -310,7 +319,7 @@ test('SVC-SRV-3 dbfilter 被注释时，runRestore 必须拿到配置里的 dbNa
     runRestore: async (a) => { gotInstance = a.instance; return { ok: true, state: 'COMMITTED' }; },
   });
   const svc = createService({ config: cfg, deps: d });
-  const r = await svc.restore('staging', null, 'K:/b.tar.enc', {});
+  const r = await svc.restore('staging-restore', null, 'K:/b.tar.enc', {});
   assert.equal(r.ok, true);
   assert.equal(gotInstance.dbName, 'tg-odoo', '经 dbfilter 缺失路径后仍要拿到配置库名，否则 runRestore 会拒绝');
 });

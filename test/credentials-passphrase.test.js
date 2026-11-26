@@ -34,7 +34,11 @@ function makeCredentials({ value } = {}) {
 }
 
 const cfg = () => ({
-  servers: [{ name: 'staging', host: '10.0.0.1', port: 22, user: 'root', keyPath: 'C:/k' }],
+  servers: [
+    { name: 'staging', host: '10.0.0.1', port: 22, user: 'root', keyPath: 'C:/k', role: 'backup' },
+    // v0.4.0：恢复只允许「恢复目标」用途；夹具副本供 restore 用例使用。
+    { name: 'staging-restore', host: '10.0.0.1', port: 22, user: 'root', keyPath: 'C:/k', role: 'restore' },
+  ],
   localBackupDir: 'K:/Backup/odoo',
   passphrase: '', // v0.1.11 起口令不再来自 config；即使有人手动写入也必须被忽略
   allowUnencryptedPackage: false,
@@ -92,7 +96,7 @@ test('CRED-4 恢复统一用 Credentials；opts.passphrase 不再静默覆盖', 
   const d = deps({ runRestore: async (a) => { captured = a; return { ok: true }; } });
   const creds = makeCredentials({ value: 'vault-pw' });
   const svc = createService({ config: cfg(), deps: { ...d, credentials: creds } });
-  await svc.restore('staging', null, 'K:/b.enc', { passphrase: 'evil-override' });
+  await svc.restore('staging-restore', null, 'K:/b.enc', { passphrase: 'evil-override' });
   assert.equal(captured.options.passphrase, 'vault-pw', '恢复必须用统一凭证，而不是调用方传值');
 });
 
@@ -100,7 +104,7 @@ test('CRED-5 恢复未配置口令 → 拒绝（fail-closed），不静默降级
   const d = deps();
   const creds = makeCredentials({ value: undefined });
   const svc = createService({ config: cfg(), deps: { ...d, credentials: creds } });
-  await assert.rejects(() => svc.restore('staging', null, 'K:/b.enc', {}), /未配置加密口令|R10|口令/);
+  await assert.rejects(() => svc.restore('staging-restore', null, 'K:/b.enc', {}), /未配置加密口令|R10|口令/);
 });
 
 test('CRED-6 错误口令不会被误报成功：口令传给 runRestore 由其解密校验', async () => {
@@ -108,7 +112,7 @@ test('CRED-6 错误口令不会被误报成功：口令传给 runRestore 由其�
   const d = deps({ runRestore: async (a) => { captured = a; return { ok: true }; } });
   const creds = makeCredentials({ value: 'right-pw' });
   const svc = createService({ config: cfg(), deps: { ...d, credentials: creds } });
-  await svc.restore('staging', null, 'K:/b.enc', {});
+  await svc.restore('staging-restore', null, 'K:/b.enc', {});
   assert.equal(captured.options.passphrase, 'right-pw');
 });
 

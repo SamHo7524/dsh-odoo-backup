@@ -39,7 +39,7 @@ function deps(overrides = {}) {
   };
 }
 const cfg = (dir) => ({
-  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'alias' }],
+  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'alias', role: 'backup' }, { name: 's1-restore', host: 'h', port: 22, user: 'root', sshConfigAlias: 'alias', role: 'restore' }],
   localBackupDir: dir,
   backupDirectory: dir,
   allowUnencryptedPackage: false,
@@ -103,7 +103,7 @@ test('SVC-4 备份期间发起恢复 → 互斥拒绝', async () => {
     const p1 = svc.backup('s1');
     for (let i = 0; i < 50 && !started; i++) await new Promise((r) => setTimeout(r, 10));
     try {
-      await assert.rejects(() => svc.restore('s1', null, 'K:/b.enc', {}), /正在执行|并发/);
+      await assert.rejects(() => svc.restore('s1-restore', null, 'K:/b.enc', {}), /正在执行|并发/);
     } finally { release(); }
     await p1;
   });

@@ -28,6 +28,19 @@ window.__ModuleLoader__.load({
       return HOSTNAME_RE.test(s);
     }
 
+    // v0.4.0：服务器用途互斥分类。Client 与 Host 不能共享模块（各自独立作用域），
+    // 因此这里内联一份与 lib/server-role.js 严格同语义的实现；
+    // test/client-role-ui.test.js 的 CRUI-1 断言两端判定表达式完全一致，防止规则漂移。
+    const ROLE_LABELS = { backup: '备份服务器', restore: '恢复目标' };
+    const roleOf = (server) => (server?.role === 'restore' ? 'restore' : 'backup');
+    const partitionServers = (raw) => {
+      const list = Array.isArray(raw) ? raw : [];
+      const backup = [];
+      const restore = [];
+      for (const s of list) (roleOf(s) === 'restore' ? restore : backup).push(s);
+      return { backup, restore };
+    };
+
     // 只使用 cordis_inspect_query Theme.listTokens 列出的主题 token。
     // 字面颜色仅用于 artwork；UI 控件一律走 token，保证明暗主题自动适配。
     const T = {
@@ -359,8 +372,8 @@ window.__ModuleLoader__.load({
           h('path', { d: 'M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1' }));
         }
 
-        function OdooBackupPanel({ scope }) {
-          const [tab, setTab] = useState('servers');
+        function OdooBackupPanel({ scope, locale, initialTab = 'servers' }) {
+          const [tab, setTab] = useState(initialTab);
           const [status, setStatus] = useState({});
           const [busy, setBusy] = useState({});
           const [saveErr, setSaveErr] = useState('');
@@ -369,8 +382,12 @@ window.__ModuleLoader__.load({
           const [draft, setDraft] = useState({
             name: '', host: '', user: 'root', keyPath: '',
             sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
+            role: 'backup',
             extraPaths: [],
           });
+          // v0.4.0：切到「恢复目标」是危险方向，要求手输服务器名确认；
+          // 反向（恢复目标 → 备份服务器）直接允许，因为它只会让机器从容恢复页消失。
+          const [roleConfirm, setRoleConfirm] = useState('');
           // v0.2.2：额外路径行的行内校验错误（名称/路径不合法时不发请求）。
           const [extraErr, setExtraErr] = useState('');
           // v0.2.2：额外路径行编辑（在 draft.extraPaths 上增删改）。
@@ -543,6 +560,9 @@ window.__ModuleLoader__.load({
           // 用户配置在 .value 下；兼容直接给出 value 形态的测试作用域。
           const config = snapshot?.value ?? snapshot ?? {};
           const servers = Array.isArray(config.servers) ? config.servers : [];
+          // v0.4.0：一次切分，三处复用（备份页 / 恢复页 / 中立化卡片）。
+          // 用数组常量名而不是内联调用，是为了让「恢复页和卡片用同一份」在源码里可见。
+          const { backup: backupServers, restore: restoreServers } = partitionServers(servers);
 
           // 保存服务器：优先走 Host 路由（Host 有官方 settings.update，
           // 不依赖前端 configForms 的 namespace 猜测）；scope 可用时同步一份。
@@ -784,7 +804,8 @@ window.__ModuleLoader__.load({
               !adding && h(Btn, {
                 onClick: () => {
                   setEditingName(null);
-                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '', dbName: '', extraPaths: [] });
+                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '', dbName: '', role: 'backup', extraPaths: [] });
+                  setRoleConfirm('');
                   setExtraErr('');
                   setAdding(true); setSaveErr('');
                 },
@@ -838,6 +859,33 @@ window.__ModuleLoader__.load({
                   onChange: (e) => setDraft({ ...draft, dbName: e.target.value }),
                   style: inputStyle,
                 }),
+                // v0.4.0：服务器用途选择（互斥两类）。切换需输入服务器名确认。
+                h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 } },
+                  h('label', { style: { fontSize: 12, color: T.text2 } }, '用途'),
+                  h('select', {
+                    value: draft.role ?? 'backup',
+                    'aria-label': '服务器用途',
+                    onChange: (e) => { setDraft({ ...draft, role: e.target.value }); setRoleConfirm(''); },
+                    style: { ...inputStyle, width: 160, marginBottom: 0 },
+                  },
+                    h('option', { value: 'backup' }, ROLE_LABELS.backup),
+                    h('option', { value: 'restore' }, ROLE_LABELS.restore),
+                  ),
+                  (draft.role ?? 'backup') === 'restore'
+                    && h('span', { style: { fontSize: 12, color: T.warn } },
+                      '恢复目标会被备份包覆盖（改库名 + 换 filestore）'),
+                ),
+                (draft.role ?? 'backup') === 'restore' && h('div', { style: { marginBottom: 8 } },
+                  h('div', { style: { fontSize: 12, color: T.text2, marginBottom: 4 } },
+                    '确认把用途设为「恢复目标」：请输入服务器名以确认'),
+                  h('input', {
+                    value: roleConfirm,
+                    placeholder: (editingName || draft.name || '').trim() || '服务器名',
+                    'aria-label': '用途确认：服务器名',
+                    onChange: (e) => setRoleConfirm(e.target.value),
+                    style: inputStyle,
+                  }),
+                ),
                 // v0.2.2：额外路径编辑器。行内 [名称][绝对路径][排除(逗号分隔)] + 删除，
                 // 顶部「添加额外路径」加行；保存时随服务器一起交给既有 saveServers，
                 // 不新增后端路由。名称/路径不合法时只做行内红字提示，不发请求。
@@ -885,7 +933,9 @@ window.__ModuleLoader__.load({
                 ),
                 h('div', { style: { display: 'flex', gap: 8, marginTop: 4 } },
                   h(Btn, {
-                    disabled: !draft.name.trim() || !draft.host.trim(),
+                    disabled: !draft.name.trim() || !draft.host.trim()
+                      || ((draft.role ?? 'backup') === 'restore'
+                          && roleConfirm.trim() !== (editingName || draft.name).trim()),
                     onClick: async () => {
                       const name = (editingName || draft.name).trim();
                       const host = draft.host.trim();
@@ -930,6 +980,8 @@ window.__ModuleLoader__.load({
                           || (existing?.pinnedFingerprint ?? ''),
                         // v0.2.2：额外路径行（未配置则为空数组，保证字段存在）。
                         extraPaths: nextExtras,
+                        // v0.4.0：用途互斥分类（默认补 backup，兼容老配置编辑）。
+                        role: draft.role ?? 'backup',
                       };
                       const next = editingName
                         ? servers.map((s) => (s.name === editingName ? nextServer : s))
@@ -938,8 +990,10 @@ window.__ModuleLoader__.load({
                       setDraft({
                         name: '', host: '', user: 'root', keyPath: '',
                         sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
+                        role: 'backup',
                         extraPaths: [],
                       });
+                      setRoleConfirm('');
                       setExtraErr('');
                       setAdding(false);
                       setEditingName(null);
@@ -962,6 +1016,14 @@ window.__ModuleLoader__.load({
                 h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
                   h('div', null,
                     h('strong', null, s.name),
+                    // v0.4.0：用途徽章（恢复目标用警示色），让两类服务器一眼可分。
+                    h('span', {
+                      style: {
+                        marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 10,
+                        border: `1px solid ${roleOf(s) === 'restore' ? T.warn : T.border}`,
+                        color: roleOf(s) === 'restore' ? T.warn : T.text2,
+                      },
+                    }, ROLE_LABELS[roleOf(s)]),
                     h('span', { style: { marginLeft: 8, color: T.text2, fontSize: 12 } },
                       `${s.user}@${s.host}:${s.port ?? 22}`),
                     h('div', { style: { marginTop: 4, fontSize: 12, color: T.text2 } },
@@ -1092,7 +1154,11 @@ window.__ModuleLoader__.load({
               // v0.1.13：真实进度条（备份）与服务器级互斥提示（§14.3 / §17.1）
               taskLocked && h(Status, { text: busyHint, tone: 'warn' }),
               hostTask && hostTask.kind === 'backup' && h(TaskProgress, { task: hostTask, netError }),
-              servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
+              // v0.4.0：备份页只列备份源（用途互斥）。
+              backupServers.length === 0
+                && h('p', { style: { color: T.text2, fontSize: 13 } },
+                  '当前没有「备份服务器」。请到「服务器」页把用途设为「备份服务器」。'),
+              backupServers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
                 h(Btn, {
                   disabled: !!busy[s.name] || (taskLocked && true),
                   onClick: () => call(s.name, async (api) => {
@@ -1115,7 +1181,13 @@ window.__ModuleLoader__.load({
                       try {
                         const last = await api('/last-backup');
                         if (last?.ok && last.localPath) {
-                          setRestorePath((m) => ({ ...m, [s.name]: last.localPath }));
+                          // v0.4.0：备份源不再出现在恢复页，因此按 s.name 回填已成死键。
+                          // 改填所有「恢复目标」——备份刚产出的 .enc 正是要恢复到它们的包。
+                          setRestorePath((m) => {
+                            const next = { ...m };
+                            for (const t of restoreServers) next[t.name] = last.localPath;
+                            return next;
+                          });
                         }
                       } catch { /* 忽略：回填是便利功能，不是备份成功条件 */ }
                     } else {
@@ -1191,7 +1263,15 @@ window.__ModuleLoader__.load({
               // v0.1.13：真实进度条（恢复）与服务器级互斥提示（§14.3 / §17.1）
               taskLocked && h(Status, { text: busyHint, tone: 'warn' }),
               hostTask && hostTask.kind === 'restore' && h(TaskProgress, { task: hostTask, netError }),
-              servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
+              // v0.4.0：恢复页只列恢复目标（用途互斥）。空态解释「为什么生产不在这里」。
+              restoreServers.length === 0
+                && h('div', { style: { padding: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2, fontSize: 13, color: T.text2 } },
+                  h('div', { style: { fontWeight: 600, marginBottom: 4, color: T.text } }, '尚未配置「恢复目标」服务器'),
+                  h('div', null,
+                    '恢复会覆盖目标库与 filestore，因此备份源不会出现在这里。'
+                    + '请到「服务器」页把演练机的用途改为「恢复目标」（该改动需要输入服务器名确认）。'),
+                ),
+              restoreServers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
                 h('input', {
                   value: restorePath[s.name] ?? '',
                   placeholder: '备份包完整路径（如 K:\\Backup\\odoo\\20261109\\odoo-backup-20261109-103541.tar.enc）',
@@ -1266,13 +1346,12 @@ window.__ModuleLoader__.load({
                   h('div', null, '· 中立化时已清空 SMTP 用户名与密码且不可还原，解除后必须到 Odoo 后台重新填写；'),
                   h('div', null, '· 支付提供商不会被自动启用——留空即全部保持禁用，需你显式给出 code；'),
                   h('div', null, '· 该操作不可逆，请确认此环境确需接管生产。')),
-                servers.map((s) => {
+                // v0.4.0：中立化卡片只渲染恢复目标（restoreServers）——用途已由服务层强制，
+                // 界面过滤是第二道。statusKnown 是另一条独立规则（状态读不到不给按钮），保留。
+                restoreServers.map((s) => {
                   const st = neuState[s.name] ?? {};
                   const stat = st.status;
                   // v0.1.18：状态未知（读取失败 / 尚未读到 / 解析失败）绝不出操作按钮。
-                  // 中立化按钮语义上是「恢复目标机」专属（接管生产决定），插件没有
-                  // 「恢复机 vs 生产机」标记，所以用「状态可读」做闸：生产机/异常机
-                  // 状态读不到就只剩错误提示 + 刷新，不给误操作入口（真机 2026-11-11）。
                   // 二次确认块不受影响：showWarn 只可能由成功的预检产生。
                   const statusKnown = !st.err && stat && stat.ok !== false;
                   const showWarn = Array.isArray(st.warnings) && st.warnings.length > 0;

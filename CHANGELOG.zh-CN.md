@@ -6,6 +6,34 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.4.0] — 2026-11-26
+
+**主题：备份源与恢复目标绝不能出现在同一个界面——在 GUI 里藏按钮不是安全边界，在服务层断言服务器用途才是。**
+
+### 新增
+
+- 服务器新增显式 `role`：`backup`（备份服务器，默认）或 `restore`（恢复目标），两者**互斥**，没有 `both`。一台服务器只能是其一，生产备份源因此永远不可能出现在恢复列表里。
+- `lib/server-role.js`：`normalizeServerRole`（配置写入时严格校验，非法值拒绝保存并回报原值）、`roleOf`（运行时判定，只有精确的 `'restore'` 才算恢复目标，其余一律 `backup`；纯函数，绝不修改或持久化配置）、`canBackup`/`canRestore`、`assertBackupServer`/`assertRestoreTarget`、`partitionServers`。
+- 每个破坏性入口都加服务层用途断言——`backup`、`inspectRestore`、`restore`、`neutralizeStatus`、`applyNeutralize`（含 `keep` 早退分支）。断言在**读到本机服务器配置之后、任何副作用之前**执行：失败时对凭证、主机指纹、发现、execRemote、scp、stat、格式探测、包元数据读取的调用全为 0，且不签发 token。`requireTrusted` 本身不变——它被只读操作共用。
+- GUI：每台服务器显示用途徽章；服务器表单增加用途选择（切到 `restore` 需手输服务器名确认）；备份页只列备份源；恢复页与中立化卡片只列恢复目标，并给出解释性空态。
+
+### 变更
+
+- **既有配置默认迁移为 `backup`**：没有 `role` 的老服务器照常备份。只有显式设为 `restore` 的服务器才能被恢复，因此拼错或大小写错误绝不会把生产服务器放进恢复列表。
+- `applyNeutralize(keep)` 语义收紧：现在会先解析服务器，对 `role: backup` 的服务器（以及不存在的服务器名）拒绝，此前对任意名字都返回 `ok:true`。
+- GUI 恢复路径回填：最近的备份包路径现在填入所有恢复目标，而非填入备份源名字（备份源已不在恢复页，旧键是死键）。
+
+### 验证
+
+- 1166 / 1166 单元测试通过（119 文件）。
+- 新增：`server-role.test.js`（SR-1~SR-13）、`server-role-config.test.js`、`server-role-gate.test.js`（GATE-1~9：拒绝时九类依赖计数全 0）、`server-role-tool.test.js`（TOOL-1~3：恢复工具拒绝备份源且不签发 token）、`client-role-ui.test.js`（CRUI-1~8）、`server-role-render.test.js`（RR-1~4，可解析时用 react-dom 真渲染）。
+- **变异 4/4 KILLED**：把 `roleOf` 默认改成 `restore`、把恢复断言挪到 `requireTrusted` 之后、删掉 `inspectRestore` 断言、把恢复页改回未过滤的 `servers.map`——四种全部被抓。
+- 生产全程只读审计：无 restore/old 库、169 个已装模块、web 200、WAF 未变（`off`）。
+
+### 教训
+
+「在页面里写了个过滤」和「页面里不再出现生产服务器」是两个不同的命题。源码 grep 只能证明前者；只有真渲染、或一条不依赖 GUI 也成立的服务层断言，才能证明后者。断言要放在能造成破坏的入口，而不是只负责展示的视图。
+
 ## [0.3.2] — 2026-11-25
 
 **主题：解析器与收集器对「成功」的理解不一致，起因是一个谁都不会故意打印的字符。**

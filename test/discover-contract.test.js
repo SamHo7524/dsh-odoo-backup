@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { createService } from '../lib/service.js';
 
 const srv = { name: 'staging', host: 'h', port: 22, user: 'root' };
-const cfg = { servers: [srv], localBackupDir: 'K:/b', passphrase: 'test-pw', allowUnencryptedPackage: false };
+const cfg = { servers: [srv, { ...srv, name: 'staging-restore', role: 'restore' }], localBackupDir: 'K:/b', passphrase: 'test-pw', allowUnencryptedPackage: false };
 
 function deps(overrides = {}) {
   const calls = [];
@@ -42,7 +42,7 @@ test('backup 在 instances 为空时报错', async () => {
 test('restore 认 discover 的 found 字段', async () => {
   const d = deps();
   const svc = createService({ config: cfg, deps: d });
-  const r = await svc.restore('staging', null, 'K:/b.tar', {});
+  const r = await svc.restore('staging-restore', null, 'K:/b.tar', {});
   assert.equal(r.ok, true);
   assert.ok(d.calls.some((c) => c[0] === 'runRestore'));
 });
@@ -50,7 +50,7 @@ test('restore 认 discover 的 found 字段', async () => {
 test('restore 在 instances 为空时报错', async () => {
   const d = deps({ discover: async () => ({ server: 's', instances: [], found: false }) });
   const svc = createService({ config: cfg, deps: d });
-  await assert.rejects(() => svc.restore('staging', null, 'K:/b.tar', {}), /未发现 Odoo 实例/);
+  await assert.rejects(() => svc.restore('staging-restore', null, 'K:/b.tar', {}), /未发现 Odoo 实例/);
 });
 
 test('discover 结果既无 found 也无 ok 时，有 instances 即视为可用', async () => {

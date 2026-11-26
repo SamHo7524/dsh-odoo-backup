@@ -6,6 +6,34 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.4.0] — 2026-11-26
+
+**Theme: a backup source and a restore target must never share a screen — hiding a button in the GUI is not a safety boundary, asserting the server's role at the service layer is.**
+
+### Added
+
+- Servers now carry an explicit `role`: `backup` (备份服务器, the default) or `restore` (恢复目标). The two are **mutually exclusive** — there is no `both`. A server can only be one or the other, so the production backup source can never appear in the restore list.
+- `lib/server-role.js`: `normalizeServerRole` (strict validation at config-write time; illegal values are rejected and reported with the offending value), `roleOf` (runtime judgment — only an exact `'restore'` counts as a restore target, everything else falls back to `backup`; pure, never mutates or persists config), `canBackup`/`canRestore`, `assertBackupServer`/`assertRestoreTarget`, and `partitionServers`.
+- Service-layer role assertions at every destructive entry point — `backup`, `inspectRestore`, `restore`, `neutralizeStatus`, `applyNeutralize` (including the `keep` early-return path). Assertions run **after the local server config is read and before any side effect**: on failure, zero calls to credentials, host-key guard, discover, execRemote, scp, stat, format detection or package-meta reads, and no token is issued. `requireTrusted` itself is unchanged — it is shared by read-only operations.
+- GUI: a role badge per server, a role selector on the server form (switching to `restore` requires typing the server name to confirm), the backup page lists only backup sources, the restore page and the neutralize card list only restore targets, with explanatory empty states.
+
+### Changed
+
+- **Existing configs are migrated by default to `backup`**: old servers without a `role` keep backing up normally. Only a server explicitly set to `restore` can be restored to, so a typo or wrong-case value can never put the production server into the restore list.
+- `applyNeutralize(keep)` is tightened: it now resolves the server first and refuses a `role: backup` server (and a nonexistent server name), where it previously returned `ok:true` for any name it was handed.
+- Restoring from the GUI: the "last backup" path is now filled into all restore targets rather than into the backup source's name (the backup source no longer appears on the restore page, so the old key was dead).
+
+### Verification
+
+- 1166 / 1166 unit tests pass (119 files).
+- New: `server-role.test.js` (SR-1~SR-13), `server-role-config.test.js`, `server-role-gate.test.js` (GATE-1~9: nine dependency counters all zero on rejection), `server-role-tool.test.js` (TOOL-1~3: restore tool rejects a backup source and issues no token), `client-role-ui.test.js` (CRUI-1~8), `server-role-render.test.js` (RR-1~4, react-dom real render when resolvable).
+- **Mutation 4/4 KILLED**: flip `roleOf`'s default to `restore`, move the restore assertion after `requireTrusted`, delete the `inspectRestore` assertion, revert the restore page to the unfiltered `servers.map` — all four are caught.
+- Production audited read-only throughout: no restore/old DBs, 169 installed modules, web 200, WAF unchanged (`off`).
+
+### Lesson
+
+"Write a filter in the page" and "the page no longer shows the production server" are different claims. Source grep proves the first; only a real render (or a service-layer assertion that holds without the GUI) proves the second. Assertions belong at the entry point that can do damage, not in the view that merely displays it.
+
 ## [0.3.2] — 2026-11-25
 
 **Theme: the parser disagreed with the collector about what "success" looked like, because of a character nobody prints on purpose.**

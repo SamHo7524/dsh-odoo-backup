@@ -6,7 +6,7 @@ import { createOdooRestoreTool } from '../lib/tools.js';
 import { createTokenStore } from '../lib/tokens.js';
 
 const cfg = {
-  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'a' }],
+  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'a', role: 'restore' }],
   localBackupDir: 'K:/b',
   allowUnencryptedPackage: false,
 };

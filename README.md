@@ -7,8 +7,8 @@ A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 / Odoo 20 r
 It backs up the database, filestore, addons, runtime dependencies and configuration over SSH, and restores through a temp-database verification, downtime switch and rollback-on-failure state machine. Host-key trust is **fail-closed** — an unpinned or changed host key is refused.
 
 - Bundle package name: `@local/dsh-odoo-backup`
-- Current version: `0.3.2`
-- Install source: `github:SamHo7524/dsh-odoo-backup#v0.3.2`
+- Current version: `0.4.0`
+- Install source: `github:SamHo7524/dsh-odoo-backup#v0.4.0`
 - License: private / internal use (`private: true` in `package.json`)
 
 > **Supported: Odoo 19 and Odoo 20** — both verified on real machines. Backup and restore must happen **within the same major version** (19 → 19, 20 → 20). **Cross-major-version restore (e.g. 19 ↔ 20) is NOT supported**: the precheck version gate refuses it with both versions named. Moving across major versions is a separate upgrade project (migrate first, then start a new backup baseline).
@@ -20,13 +20,13 @@ It backs up the database, filestore, addons, runtime dependencies and configurat
 In DSH, install the bundle directly from this repository:
 
 ```
-github:SamHo7524/dsh-odoo-backup#v0.3.2
+github:SamHo7524/dsh-odoo-backup#v0.4.0
 ```
 
-Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.3.2):
+Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo-backup/releases/tag/v0.4.0):
 
 ```
-dsh-odoo-backup-0.3.2.tgz
+dsh-odoo-backup-0.4.0.tgz
 ```
 
 > Upgrading from `0.1.x`: the plugin was renamed from `dsh-odoo19-backup` to `dsh-odoo-backup` and this repository followed. Uninstall the old bundle (`@local/dsh-odoo19-backup`) first, then install the new one. The runtime entry id (`odoo-backup`) is unchanged, so your servers, passphrase and settings are preserved.
@@ -142,6 +142,7 @@ mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
 
 ## Security model
 
+- **Server roles (mutually exclusive)**: every server has a `role` — `backup` (备份服务器, the default) or `restore` (恢复目标). Only a server explicitly set to `restore` appears on the Restore / Neutralize pages, and only a `backup` server appears on the Backup page. More importantly, this is enforced at the **service layer**: `backup` / `inspectRestore` / `restore` / `neutralizeStatus` / `applyNeutralize` all assert the role after reading local config and before any side effect, so the Agent tool path (which bypasses the GUI) is guarded too. Old configs without `role` default to `backup`; a typo never becomes a restore target. Switching a server to `restore` in the GUI requires typing its name to confirm, because restore overwrites the target database and replaces its filestore.
 - **Host keys**: `guardHostKey` allows only `sshConfigAlias` or a matching `pinnedFingerprint`; anything else is refused. `scanHostKey` only *reads* fingerprints — `pin` requires a manually confirmed value and re-verifies before writing `known_hosts`.
 - **Confirm token**: `odoo_restore action=precheck` issues a token bound to `server + packagePath + neutralize`, valid 5 minutes and single-use (the path is normalized before binding, so a quoted `precheck` pairs with an unquoted `restore` — a different package is still rejected). `restore` without a valid token never reaches `service.restore`.
 - **Same-origin guard**: `/odoo-backup/*` UI routes reject cross-origin requests (403). This is not an authentication boundary — DSH's own session/authorization is.
@@ -155,7 +156,7 @@ mkdir -p /tmp/vault-restore && tar -xf /tmp/vault.tar.zst -C /tmp/vault-restore
 ## Development
 
 ```bash
-node --test "test/**/*.test.js"        # 1129 tests
+node --test "test/**/*.test.js"        # 1166 tests
 node --check index.js client.js lib/*.js
 node scripts/release-sync-check.mjs    # verify tags ↔ GitHub Releases ↔ CHANGELOG ↔ README
 ```
@@ -193,9 +194,9 @@ The project is **not** a local git checkout during development; releases are pub
 
 ## Status & limitations
 
-- 1129 / 1129 unit tests pass; `node --check` clean across `index.js`, `client.js`, `lib/*.js` and the release scripts.
+- 1166 / 1166 unit tests pass; `node --check` clean across `index.js`, `client.js`, `lib/*.js` and the release scripts.
 - Real-machine verified: `odoo_backup` `listServers` / `test` over SSH, `odoo_restore` status, the native settings section and its HTTP routes.
 - **Not executed / not authorized**: real R1 downtime switch on the production primary database, agent-driven browser click-through, production deployment. Production servers were read-only throughout development.
 - Host-side changes require a **full DSH restart**; the Client half only needs a hard refresh.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.3.2), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
+See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.4.0), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.

@@ -6,6 +6,7 @@ import { readLock, inspectLock, confirmStaleLock, releaseLock } from './lib/serv
 import { serverIdOf } from './lib/server-id.js';
 import { resolveBackupDirectory, validateDirectory, DEFAULT_BACKUP_DIRECTORY } from './lib/backup-directory.js';
 import { createService } from './lib/service.js';
+import { normalizeServerRole } from './lib/server-role.js';
 import { normalizeRestorePath } from './lib/restore-path.js';
 import { resolveLastBackup } from './lib/completed-package.js';
 import { isHostname } from './lib/site-domain.js';
@@ -85,6 +86,17 @@ export const Config = z.object({
             '依赖快照备份（v0.3.1）：在运行中的 venv 上执行 pip freeze，记录精确版本 + Python 版本 + '
             + '生成时间 + SHA-256。用于「有 65 个包却没有任何 requirements 文件」这类服务'
             + '（如 /opt/web_cs）——只恢复源码和配置不能保证服务重新运行',
+          ),
+        // v0.4.0：服务器用途（互斥两类）。默认值方向 = 安全侧：
+        // 老配置缺失 role 时按「备份服务器」处理，绝不默认进恢复列表。
+        // 枚举由 schema 强制（非法值直接抛错），写入前再过 normalizeServerRole 给出中文文案。
+        role: z
+          .union([z.const('backup'), z.const('restore')])
+          .default('backup')
+          .description(
+            '服务器用途：backup=备份服务器（默认，生产服务器）／restore=恢复目标（会被覆盖）。'
+            + '两类互斥：备份源绝不出现在恢复页，恢复目标绝不出现在备份页；'
+            + '服务层在备份/恢复/中立化入口强制校验，不只是界面隐藏',
           ),
       }),
     )
@@ -328,16 +340,26 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
       // 运行中的 config（活引用）立即读到新值 —— 无需也不应手工改 config.servers。
       const servers = Array.isArray(body.servers) ? body.servers : null;
       if (!servers) throw new Error('缺少 servers 数组');
+      // v0.4.0：用途在写入时严格校验（拼错就拒绝保存，而不是静默降级），
+      // 并把归一化结果写回条目——否则「缺失 role」会一直以缺字段形态存在，
+      // 只能靠 roleOf 兜底，用户看不出这台机器到底被当成什么。
+      const normalized = [];
       for (const s of servers) {
         if (!s || typeof s.name !== 'string' || !s.name.trim()) {
           throw new Error('每个服务器都需要非空 name');
         }
+        const name = s.name.trim();
+        const roleCheck = normalizeServerRole(s.role);
+        if (!roleCheck.ok) {
+          throw new Error(`服务器「${name}」的用途非法：${roleCheck.reason}`);
+        }
+        normalized.push({ ...s, name, role: roleCheck.role });
       }
       if (!settings || typeof settings.update !== 'function') {
         throw new Error('Host 设置服务不可用，无法保存配置');
       }
-      await settings.update(entryId, { servers });
-      return send(200, { ok: true, servers });
+      await settings.update(entryId, { servers: normalized });
+      return send(200, { ok: true, servers: normalized });
     }
     if (route === '/servers') {
       // 增量返回信任相关字段，供 UI 分别显示「主机身份」与「登录认证」状态。

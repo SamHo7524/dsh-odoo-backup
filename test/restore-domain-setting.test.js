@@ -152,7 +152,7 @@ function deps(captured) {
   };
 }
 const cfg = (extra = {}) => ({
-  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'a' }],
+  servers: [{ name: 's1', host: 'h', port: 22, user: 'root', sshConfigAlias: 'a', role: 'restore' }],
   localBackupDir: 'K:/b',
   allowUnencryptedPackage: false,
   ...extra,

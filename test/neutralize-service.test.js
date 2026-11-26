@@ -11,7 +11,9 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { createService } from '../lib/service.js';
 
-function makeConfig(servers = [{ name: 's1', host: 'h', user: 'root', dbName: 'toogel' }]) {
+// v0.4.0：中立化（keep 与 release 都算）只允许「恢复目标」。本文件的默认夹具描述
+// 的就是恢复目标，因此显式带 role: 'restore'（缺失 role 会按备份源处理并被拒）。
+function makeConfig(servers = [{ name: 's1', host: 'h', user: 'root', dbName: 'toogel', role: 'restore' }]) {
   return { servers };
 }
 

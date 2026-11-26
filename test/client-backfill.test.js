@@ -26,6 +26,13 @@ const useEffect = () => {}; // 替身：不执行副作用
 const useRef = (init) => ({ current: init }); // v0.1.17：轮询需请求序号
 const useSyncExternalStore = (subscribe, getSnapshot) => getSnapshot();
 
+// v0.4.0：备份源与恢复目标互斥。备份成功产出的 .enc 会回填到所有恢复目标，
+// 故夹具必须有至少一台 role:'restore' 的机器，否则恢复页为空、输入框不存在。
+const SERVERS = [
+  { name: 's1', host: 'h', role: 'backup' },
+  { name: 'drill', host: 'h2', role: 'restore' },
+];
+
 function realScope(initial = {}) {
   let snap = initial;
   const listeners = new Set();
@@ -135,7 +142,7 @@ function clickTab(injected, comp, label) {
 }
 
 test('FILL-1 备份成功 → 恢复输入框回填 Host 返回的最终 .enc 路径', async () => {
-  const scope = realScope({ servers: [{ name: 's1', host: 'h' }] });
+  const scope = realScope({ servers: SERVERS });
   const fetchStub = makeFetch({
     '/backup': async () => ({ ok: true, result: { ok: true, localPath: 'K:\\Backup\\odoo\\20261109\\x.tar.enc', bytes: 1024 } }),
     '/last-backup': async () => ({ ok: true, localPath: 'K:\\Backup\\odoo\\20261109\\x.tar.enc' }),
@@ -160,7 +167,7 @@ test('FILL-1 备份成功 → 恢复输入框回填 Host 返回的最终 .enc �
 });
 
 test('FILL-2 备份失败 → 不请求回填，且不覆盖用户已填写的恢复路径', async () => {
-  const scope = realScope({ servers: [{ name: 's1', host: 'h' }] });
+  const scope = realScope({ servers: SERVERS });
   const fetchStub = makeFetch({
     '/backup': async () => ({ ok: true, result: { ok: false, error: 'boom' } }),
     '/last-backup': async () => ({ ok: true, localPath: 'K:\\WRONG\\should-not-fill.tar.enc' }),
@@ -189,7 +196,7 @@ test('FILL-2 备份失败 → 不请求回填，且不覆盖用户已填写的�
 });
 
 test('FILL-3 Host 拒绝回填（ok:false）→ 恢复框保持空/原值', async () => {
-  const scope = realScope({ servers: [{ name: 's1', host: 'h' }] });
+  const scope = realScope({ servers: SERVERS });
   const fetchStub = makeFetch({
     '/backup': async () => ({ ok: true, result: { ok: true, localPath: 'K:\\Backup\\odoo\\x.tar.enc', bytes: 1024 } }),
     '/last-backup': async () => ({ ok: false, reason: '最终加密产物不存在或格式校验未通过' }),

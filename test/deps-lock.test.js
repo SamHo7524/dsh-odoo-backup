@@ -27,6 +27,7 @@ import {
   parseLockFile,
   compareFreezeToLock,
   buildDepsRestoreScript,
+  lockFileName,
   LOCK_FILE_HEADER,
 } from '../lib/deps-lock.js';
 

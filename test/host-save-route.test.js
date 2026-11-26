@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { normalizeServerRole } from '../lib/server-role.js';
 
 const hostSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
@@ -17,8 +18,10 @@ function loadHandler() {
   const body = hostSrc.slice(start);
   // 截到文件末尾即可（handleUiRequest 是最后一个函数）
   const code = `return (${body.replace(/^async function handleUiRequest/, 'async function')})`;
+  // v0.4.0：/save-servers 现在调用 normalizeServerRole 做用途校验。
+  // harness 只抽取了函数体（不含 import），因此显式注入这个纯函数。
   // eslint-disable-next-line no-new-func
-  return new Function(code)();
+  return new Function('normalizeServerRole', code)(normalizeServerRole);
 }
 
 function makeRes() {

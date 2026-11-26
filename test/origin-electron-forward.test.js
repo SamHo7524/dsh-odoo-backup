@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { normalizeServerRole } from '../lib/server-role.js';
 
 const hostSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
@@ -21,8 +22,9 @@ function loadHandler() {
   assert.ok(start > 0, 'index.js 应包含 handleUiRequest');
   const body = hostSrc.slice(start);
   const code = `return (${body.replace(/^async function handleUiRequest/, 'async function')})`;
+  // v0.4.0：/save-servers 现在调用 normalizeServerRole 做用途校验。
   // eslint-disable-next-line no-new-func
-  return new Function(code)();
+  return new Function('normalizeServerRole', code)(normalizeServerRole);
 }
 
 function makeRes() {
